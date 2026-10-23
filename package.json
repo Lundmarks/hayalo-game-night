@@ -1,0 +1,31 @@
+{
+  "name": "hayalo-game-night",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c magenta,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:discord": "TUNNEL=1 npm run dev",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:client": "vite",
+    "tunnel": "cloudflared tunnel --url http://localhost:5173",
+    "build": "vite build",
+    "start": "NODE_ENV=production tsx src/server/index.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^2.5.0",
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
+    "tsx": "^4.23.15",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "concurrently": "^10.0.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}
