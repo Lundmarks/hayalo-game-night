@@ -39,7 +39,8 @@ export type Team = {
   name: string;
   color: string;
   ammo: Record<WeaponId, number>;
-  nextWorm: number;
+  lastWorm: number; // id of the worm that played this team's last turn, -1 at start
+  out: 'left' | 'surrendered' | null; // knocked out of the match without losing its worms in battle
 };
 
 export type Turn = {
@@ -113,6 +114,7 @@ export type ArtAction =
   | { a: 'jump' }
   | { a: 'aim'; angle: number; power: number; weapon: WeaponId }
   | { a: 'fire'; weapon: WeaponId; angle: number; power: number; tx?: number; ty?: number }
+  | { a: 'surrender' }
   | { a: 'restart' };
 
 export const TEAM_COLORS = ['#ff6b8b', '#5ad1ff', '#7cf29a', '#ffb547', '#c08bff', '#ff8a3d'];

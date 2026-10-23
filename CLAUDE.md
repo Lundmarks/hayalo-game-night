@@ -10,7 +10,12 @@ README.md covers setup, Discord portal config, and architecture. Read it first.
   to play against yourself (mock guests, `?room=name` for separate rooms).
 - `npm run dev:discord` + `npm run tunnel`: test inside Discord (update URL mapping
   in the Developer Portal each time the tunnel URL changes).
-- `npm run check`: typecheck (`tsc --noEmit`). There are no tests yet.
+- `npm run check`: typecheck (`tsc --noEmit`).
+- `npm test`: Node's built-in test runner via `tsx` (`tests/*.test.ts`). The
+  artillery tests drive the GameModule with a fake room and a hand-cranked
+  `Date.now`, so timers (turn clock, forfeit grace) run on demand.
+- Git remote is `git@github.com:Lundmarks/hayalo-game-night.git`. The user pushes
+  themselves; commit locally, never push.
 - `.env` holds the real Discord secret. Never print or commit it.
 
 ## Architecture rules
@@ -18,6 +23,8 @@ README.md covers setup, Discord portal config, and architecture. Read it first.
 - **Server is authoritative.** Games are `GameModule`s in `src/server/games/`
   (state mutated in place, return an error string / `QUIET` / nothing). Clients only
   send intents and render. Room = one Discord `instanceId`; first player is host.
+  The interfaces and `QUIET` live in `games/module.ts`; game files import from
+  there, not `index.ts`, to avoid a circular import.
 - **Full state vs. events.** `ctx.broadcast()` sends the whole room state;
   `ctx.emit()` sends a one-off event (artillery uses this for timelines, walking
   and live aim, returning `QUIET` to skip the broadcast).
@@ -43,25 +50,17 @@ Working:
   terrain, wind, walking/jumping, fall damage, drowning, 7 weapons (bazooka,
   grenade, shotgun, cluster, air strike, Holy Hay Bomb, teleport), camera that
   follows the action on narrow screens, keyboard + touch controls, synthesized
-  audio with panning.
+  audio with panning. Surrender (tap twice), forfeit after 60s disconnected,
+  turn clock paused during jump/fall animations, per-team worm rotation by id.
 
-Not set up: git, tests, production hosting.
+Not set up: production hosting.
 
 ## Next steps
 
-Known gaps / bugs (artillery):
-1. **No forfeit.** If opponents leave mid-match their worms stay alive, so the
-   remaining player can never win. Add a forfeit (after a grace period offline)
-   and a "surrender" button.
-2. **Turn timer fires during a jump/fall animation** (phase stays `aiming`), so the
-   turn can switch mid-animation. Pause or extend the timer while `busyUntil` is
-   in the future.
-3. **Worm rotation skips** when a teammate dies (`nextWorm % aliveWorms.length`
-   shifts). Rotate by worm id instead.
-4. No retreat time after firing (classic Worms gives ~3s to run).
-5. Teleport target isn't validated on the client, so a bad tap only shows an error
-   after sending.
-6. Late joiners can only spectate an artillery match in progress.
+Known gaps (artillery):
+1. No retreat time after firing (classic Worms gives ~3s to run).
+2. Late joiners can only spectate an artillery match in progress.
+3. No in-match team list showing who is out / offline.
 
 Features worth adding:
 - Sudden death (rising water after N turns) so matches end.
@@ -72,7 +71,5 @@ Features worth adding:
   "Coming soon" cards).
 
 Project hygiene:
-- `git init` and a first commit.
-- A few tests for the deterministic parts (terrain generation identical for the
-  same seed/craters, sim outcomes) and the tic-tac-toe rules.
+- More tests: sim outcomes, tic-tac-toe rules.
 - Deploy somewhere with HTTPS for a stable URL instead of the quick tunnel.

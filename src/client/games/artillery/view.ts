@@ -1,4 +1,4 @@
-import { SAMPLE, FPS, WORM_R } from '../../../shared/artillery/sim.ts';
+import { clearSpot, SAMPLE, FPS, WORM_R } from '../../../shared/artillery/sim.ts';
 import { H, Terrain, W, WATER_Y } from '../../../shared/artillery/terrain.ts';
 import { WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Crater, type ProjKind, type SimEvent, type Timeline, type Track, type WeaponId } from '../../../shared/artillery/types.ts';
 import type { Player, RoomView } from '../../../shared/protocol.ts';
@@ -37,6 +37,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         <div class="art-turn"></div>
         <div class="art-timer"></div>
         <div class="art-wind" title="Wind"><span class="wind-arrow"></span><div class="wind-bar"><div class="wind-fill"></div></div></div>
+        <button class="btn ghost small art-surrender" data-surrender hidden title="Give up this match">🏳️ Surrender</button>
       </div>
       <div class="art-stage"><canvas></canvas><div class="art-overlay" hidden></div></div>
       <div class="art-bar">
@@ -63,6 +64,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   const weaponsEl = $('.weapons');
   const barEl = $('.art-bar');
   const hintEl = $('.art-hint');
+  const surrenderBtn = $('.art-surrender');
+  let surrenderArmed = 0; // tap twice to surrender, so a stray tap doesn't end your match
 
   let room: RoomView | null = null;
   let me: Player | null = null;
@@ -166,6 +169,14 @@ export const createArtilleryView: ViewFactory = (root, send) => {
 
     // Snap displayed positions to the server's.
     for (const w of s.worms) disp.set(w.id, { x: w.x, y: w.y });
+
+    if (prev && prev.phase !== 'lobby') {
+      s.teams.forEach((t, i) => {
+        if (t.out && !prev.teams[i]?.out && t.playerId === prev.teams[i]?.playerId) {
+          toast(`${t.playerId === me?.id ? 'You' : t.name} ${t.out === 'surrendered' ? 'surrendered' : 'left the match'}`);
+        }
+      });
+    }
 
     const turnChanged = s.turn && s.turn.no !== prev?.turn?.no;
     if (turnChanged && s.phase === 'aiming') {
@@ -335,6 +346,13 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         <span>${wp.icon}</span>${left >= 0 ? `<i>${left}</i>` : ''}</button>`;
     }).join('');
 
+    const inMatch = s.phase === 'aiming' || s.phase === 'resolving';
+    const myTeam = mine >= 0 ? s.teams[mine] : null;
+    const canSurrender = inMatch && !!myTeam && !myTeam.out && s.worms.some((w) => w.team === mine && w.alive);
+    surrenderBtn.hidden = !canSurrender;
+    if (!canSurrender) surrenderArmed = 0;
+    surrenderBtn.textContent = surrenderArmed ? 'Tap again to give up' : '🏳️ Surrender';
+
     const active = canAct();
     barEl.classList.toggle('inactive', !active);
     const wp = WEAPON_BY_ID[weapon];
@@ -402,7 +420,13 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (!canAct()) return;
     const pt = toWorld(e);
     if (WEAPON_BY_ID[weapon].aim === 'target') {
-      target = { x: Math.round(pt.x), y: Math.round(pt.y) };
+      const x = Math.round(pt.x);
+      const y = Math.round(pt.y);
+      if (weapon === 'teleport' && terrain && !clearSpot(terrain, x, y)) {
+        toast("Can't teleport there. Pick an open spot");
+        return;
+      }
+      target = { x, y };
       sfx('click');
       return;
     }
@@ -439,8 +463,23 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   }
 
   root.addEventListener('click', (e) => {
-    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-art],[data-weapon],[data-fire],[data-jump]');
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-art],[data-weapon],[data-fire],[data-jump],[data-surrender]');
     if (!el) return;
+    if (el.dataset.surrender !== undefined) {
+      if (Date.now() - surrenderArmed < 3000) {
+        surrenderArmed = 0;
+        send({ a: 'surrender' });
+      } else {
+        surrenderArmed = Date.now();
+        setTimeout(() => {
+          if (surrenderArmed && Date.now() - surrenderArmed >= 3000) {
+            surrenderArmed = 0;
+            renderHud();
+          }
+        }, 3100);
+      }
+      return renderHud();
+    }
     if (el.dataset.weapon) return selectWeapon(el.dataset.weapon as WeaponId);
     if (el.dataset.fire !== undefined) return fire();
     if (el.dataset.jump !== undefined) return canAct() && send({ a: 'jump' });

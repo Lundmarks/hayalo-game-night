@@ -1,11 +1,13 @@
 import { fire, grounded, Sim, walk, WORM_R, FPS } from '../../shared/artillery/sim.ts';
 import { Terrain, W, WATER_Y } from '../../shared/artillery/terrain.ts';
 import { TEAM_COLORS, WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Timeline, type WeaponId } from '../../shared/artillery/types.ts';
-import { QUIET, type GameContext, type GameModule } from './index.ts';
+import { QUIET, type GameContext, type GameModule } from './module.ts';
 
 const MAX_TEAMS = 6;
 const WALK_BUDGET = 170;
 const JUMP_COST = 25;
+// How long a player can be disconnected mid-match before their team forfeits.
+const GRACE_MS = 60_000;
 const WORM_NAMES = [
   'Bale', 'Straw', 'Pitchfork', 'Haystack', 'Clover', 'Barley', 'Oats', 'Thistle', 'Rye', 'Sprout', 'Scarecrow', 'Tractor',
   'Muddy', 'Wheat', 'Harvest', 'Acorn', 'Turnip', 'Biscuit', 'Pickle', 'Nugget', 'Waffle', 'Noodle', 'Pebble', 'Rusty',
@@ -46,7 +48,8 @@ function startMatch(s: ArtState, ctx: GameContext) {
   s.solo = s.teams.length === 1;
   s.teams.forEach((t) => {
     t.ammo = fullAmmo();
-    t.nextWorm = 0;
+    t.lastWorm = -1;
+    t.out = null;
   });
 
   // Spread worms across the island, teams mixed together.
@@ -74,14 +77,49 @@ function startMatch(s: ArtState, ctx: GameContext) {
   nextTurn(s, ctx, Math.floor(Math.random() * s.teams.length) - 1);
 }
 
-function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
-  const alive = s.teams.map((_, i) => i).filter((i) => s.worms.some((w) => w.team === i && w.alive));
-  if (s.solo ? alive.length === 0 : alive.length <= 1) {
-    s.phase = 'over';
-    s.winner = s.solo ? null : alive[0] ?? null;
-    s.turn = null;
-    return;
+const aliveTeams = (s: ArtState) => s.teams.map((_, i) => i).filter((i) => s.worms.some((w) => w.team === i && w.alive));
+
+/** End the match if one team (or, in solo, none) is left. */
+function checkOver(s: ArtState) {
+  const alive = aliveTeams(s);
+  if (s.solo ? alive.length > 0 : alive.length > 1) return false;
+  s.phase = 'over';
+  s.winner = s.solo ? null : alive[0] ?? null;
+  s.turn = null;
+  return true;
+}
+
+/** End the turn when time runs out. Animations push endsAt back, so re-check. */
+function armTurnTimer(s: ArtState, ctx: GameContext) {
+  const turn = s.turn!;
+  ctx.setTimer(Math.max(0, turn.endsAt - Date.now()), () => {
+    if (s.turn !== turn || s.phase !== 'aiming') return;
+    if (Date.now() < turn.endsAt - 20) return armTurnTimer(s, ctx);
+    nextTurn(s, ctx);
+    ctx.broadcast();
+  });
+}
+
+/** Take a team out of the match (surrendered or gone too long). */
+function knockOut(s: ArtState, ctx: GameContext, team: number, reason: 'left' | 'surrendered') {
+  const t = s.teams[team];
+  if (!t || t.out || (s.phase !== 'aiming' && s.phase !== 'resolving')) return;
+  t.out = reason;
+  for (const w of s.worms) {
+    if (w.team !== team) continue;
+    w.alive = false;
+    w.hp = 0;
   }
+  // While resolving, the pending timer moves the game on by itself.
+  if (s.phase === 'aiming') {
+    if (s.turn?.team === team) nextTurn(s, ctx);
+    else checkOver(s);
+  }
+}
+
+function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
+  if (checkOver(s)) return;
+  const alive = aliveTeams(s);
 
   const online = new Set(ctx.players().map((p) => p.id));
   const n = s.teams.length;
@@ -95,9 +133,11 @@ function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
   }
   if (team < 0) team = alive[0];
 
+  // Each team cycles through its worms in id order, skipping dead ones.
   const t = s.teams[team];
   const worms = s.worms.filter((w) => w.team === team && w.alive);
-  const worm = worms[t.nextWorm++ % worms.length];
+  const worm = worms.find((w) => w.id > t.lastWorm) ?? worms[0];
+  t.lastWorm = worm.id;
   s.wind = Math.round((Math.random() * 2 - 1) * 10) / 10;
   s.phase = 'aiming';
   const no = (s.turn?.no ?? 0) + 1;
@@ -111,13 +151,7 @@ function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
     power: 0.6,
     weapon: 'bazooka',
   };
-
-  ctx.setTimer(s.turnSeconds * 1000, () => {
-    if (s.turn?.no === no && s.phase === 'aiming') {
-      nextTurn(s, ctx);
-      ctx.broadcast();
-    }
-  });
+  armTurnTimer(s, ctx);
 }
 
 /** Play a simulation to everyone, then move on when the animation is done. */
@@ -128,7 +162,10 @@ function runSim(s: ArtState, ctx: GameContext, sim: Sim, endsTurn: boolean) {
   P(s).busyUntil = Date.now() + ms;
 
   const worm = currentWorm(s);
-  if (endsTurn || !worm?.alive) {
+  if (!endsTurn && worm?.alive && s.turn) {
+    // A jump or fall mid-turn: don't let the animation eat into the turn time.
+    s.turn.endsAt += ms;
+  } else {
     s.phase = 'resolving';
     const no = s.turn?.no;
     ctx.setTimer(ms, () => {
@@ -178,7 +215,8 @@ export const artillery: GameModule<ArtState> = {
           name: player?.name ?? 'Player',
           color: TEAM_COLORS.find((c) => !used.has(c)) ?? TEAM_COLORS[0],
           ammo: fullAmmo(),
-          nextWorm: 0,
+          lastWorm: -1,
+          out: null,
         });
         return;
       }
@@ -208,12 +246,26 @@ export const artillery: GameModule<ArtState> = {
         if (!isHost) return 'Only the host can restart';
         if (s.phase !== 'over') return;
         s.phase = 'lobby';
+        // Teams whose player has gone don't carry over to the next match.
+        {
+          const online = new Set(ctx.players().map((x) => x.id));
+          s.teams = s.teams.filter((t) => online.has(t.playerId));
+          s.teams.forEach((t) => (t.out = null));
+        }
         s.worms = [];
         s.turn = null;
         s.craters = [];
         s.seed = 0;
         p.terrain = null;
         return;
+
+      case 'surrender': {
+        if (s.phase !== 'aiming' && s.phase !== 'resolving') return 'The match is not running';
+        const team = s.teams.findIndex((t) => t.playerId === pid);
+        if (team < 0) return 'You are not in this match';
+        knockOut(s, ctx, team, 'surrendered');
+        return;
+      }
 
       case 'walk': {
         if (!isMyTurn(s, pid) || now < p.busyUntil) return QUIET;
@@ -293,8 +345,19 @@ export const artillery: GameModule<ArtState> = {
   playerLeft(s, pid, ctx) {
     if (s.phase === 'lobby') {
       s.teams = s.teams.filter((t) => t.playerId !== pid);
-    } else if (s.phase === 'aiming' && s.turn && s.teams[s.turn.team]?.playerId === pid) {
-      nextTurn(s, ctx);
+      return;
     }
+    if (s.phase !== 'aiming' && s.phase !== 'resolving') return;
+    if (s.phase === 'aiming' && s.turn && s.teams[s.turn.team]?.playerId === pid) nextTurn(s, ctx);
+
+    // Give them a minute to come back before their team forfeits.
+    const seed = s.seed;
+    ctx.setTimer(GRACE_MS, () => {
+      if (s.seed !== seed || ctx.players().some((x) => x.id === pid)) return;
+      const team = s.teams.findIndex((t) => t.playerId === pid);
+      if (team < 0) return;
+      knockOut(s, ctx, team, 'left');
+      ctx.broadcast();
+    });
   },
 };
