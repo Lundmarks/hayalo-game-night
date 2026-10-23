@@ -6,6 +6,14 @@ export const inDiscord = new URLSearchParams(location.search).has('frame_id');
 
 export type Identity = { instanceId: string; auth: JoinAuth };
 
+let sdk: DiscordSDK | null = null;
+
+/** Open a link in the user's browser. Inside Discord, plain links are blocked. */
+export function openExternal(url: string) {
+  if (sdk) sdk.commands.openExternalLink({ url }).catch(() => {});
+  else window.open(url, '_blank', 'noopener');
+}
+
 export async function getIdentity(): Promise<Identity> {
   return inDiscord ? discordIdentity() : browserIdentity();
 }
@@ -14,7 +22,7 @@ async function discordIdentity(): Promise<Identity> {
   const clientId = import.meta.env.VITE_DISCORD_CLIENT_ID;
   if (!clientId) throw new Error('VITE_DISCORD_CLIENT_ID is not set in .env');
 
-  const sdk = new DiscordSDK(clientId);
+  sdk = new DiscordSDK(clientId);
   await sdk.ready();
 
   // Ask the user to authorize the app (silent after the first time).

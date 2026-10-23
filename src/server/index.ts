@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ClientMsg, JoinAuth, Player, ServerMsg } from '../shared/protocol.ts';
+import { geoRouter } from './geo/photos.ts';
 import { dropIfEmpty, getRoom, type Room } from './rooms.ts';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -46,6 +47,9 @@ api.post('/token', async (req, res) => {
 });
 
 api.get('/health', (_req, res) => res.json({ ok: true }));
+
+// Photos and map tiles for "Hay, Where?".
+api.use('/geo', geoRouter);
 
 // Discord's proxy may forward requests with or without the /.proxy prefix.
 app.use('/api', api);

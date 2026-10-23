@@ -4,6 +4,7 @@ import type { Player, RoomView } from '../shared/protocol.ts';
 import { audio } from './audio.ts';
 import { getIdentity, inDiscord } from './discord.ts';
 import { createArtilleryView } from './games/artillery/view.ts';
+import { createGeoView } from './games/geoguess.ts';
 import { createTicTacToeView } from './games/tictactoe.ts';
 import { Connection } from './net.ts';
 import { avatar, esc, toast, type GameView, type ViewFactory } from './ui.ts';
@@ -11,6 +12,7 @@ import { avatar, esc, toast, type GameView, type ViewFactory } from './ui.ts';
 const VIEWS: Record<string, ViewFactory> = {
   tictactoe: createTicTacToeView,
   artillery: createArtilleryView,
+  geoguess: createGeoView,
 };
 
 const app = document.getElementById('app')!;

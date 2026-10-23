@@ -5,6 +5,8 @@ A Discord Activity: a game launcher that runs inside Discord voice channels.
 Games:
 - **Hay-Tac-Toe**: two players, everyone else spectates.
 - **Hayalo Artillery**: Worms-style, 1–6 players, destructible terrain and seven weapons.
+- **Hay, Where?**: everyone gets the same photo and drops a pin where they think it
+  was taken. Closest wins, with a bonus for being quick.
 
 ## Setup
 
@@ -52,6 +54,20 @@ the next person becomes host.
   never carries pixels.
 - Controls: drag on the map to aim (distance = power), Space/FIRE to shoot,
   ←/→ or the buttons to walk, J to jump, W/S angle, Q/E power, 1–7 weapons.
+
+## Hay, Where?
+
+- Photos come from Wikimedia Commons ("Quality images" with a camera location,
+  wide shots only, with close-ups, food, museum pieces and so on filtered out).
+  No API key needed. `src/server/geo/photos.ts` holds the search.
+- The server downloads each photo and serves it under a random token
+  (`/api/geo/img/<token>`), because Commons filenames usually name the place.
+  Map tiles (OpenStreetMap) go through `/api/geo/tile/...` for the same Discord
+  iframe reason as everything else. Both are cached in memory.
+- Pins stay on the server until the reveal, so nobody can peek at other guesses.
+- Score: up to 5000 for distance (about 3000 at 500 km), plus up to 1000 for speed,
+  scaled by how good the guess was. The first lock-in cuts everyone else to 15s.
+- Commons is heavy on Europe, so expect more European photos than anywhere else.
 
 ## Sound
 

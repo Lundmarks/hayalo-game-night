@@ -214,3 +214,101 @@ body.offline::after {
   .wpn { width: 36px; height: 36px; font-size: 18px; }
   .wind-bar { width: 60px; }
 }
+
+/* Hay, Where? */
+.geo { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.geo-top {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px;
+  padding: 6px 12px; background: rgba(0, 0, 0, 0.25); font-size: 14px; min-height: 44px;
+}
+.geo-round { font-weight: 700; white-space: nowrap; }
+.geo-timer { font-weight: 800; font-size: 20px; min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; }
+.geo-timer.urgent { color: var(--x); animation: pulse 0.5s infinite alternate; }
+.geo-right { justify-self: end; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.geo-guessed { display: flex; align-items: center; gap: 4px; padding-left: 6px; font-size: 12px; white-space: nowrap; }
+.geo-host { display: flex; gap: 6px; }
+
+.geo-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #0b0918; }
+.geo-photo { position: absolute; inset: 0; overflow: hidden; cursor: zoom-in; display: grid; place-items: center; }
+.geo-photo img { width: 100%; height: 100%; object-fit: contain; transition: transform 0.25s ease; user-select: none; }
+.geo-photo.zoomed { cursor: zoom-out; }
+.geo-photo.zoomed img { transform: scale(2.5); transition: transform 0.25s ease, transform-origin 0s; }
+.geo-loading { position: absolute; color: var(--muted); }
+.geo-loading[hidden] { display: none; }
+
+.geo-mapbox {
+  position: absolute; right: 12px; bottom: 12px; z-index: 2;
+  width: 300px; height: 220px; display: flex; flex-direction: column; gap: 6px;
+  transition: width 0.2s ease, height 0.2s ease; opacity: 0.85;
+}
+.geo-mapbox:hover, .geo-mapbox:focus-within { width: min(620px, 70%); height: min(440px, 75%); opacity: 1; }
+.geo-map { flex: 1; border-radius: 10px; overflow: hidden; border: 2px solid rgba(255, 255, 255, 0.25); cursor: crosshair; background: #aad3df; }
+.geo-lock { width: 100%; }
+.geo-maptoggle { display: none; }
+.phase-lobby .geo-mapbox, .phase-loading .geo-mapbox, .phase-over .geo-mapbox { visibility: hidden; }
+.phase-lobby .geo-photo, .phase-over .geo-photo { visibility: hidden; }
+
+/* At the reveal the map takes over the stage and the photo shrinks to a corner. */
+.phase-reveal .geo-mapbox { inset: 0; width: auto; height: auto; opacity: 1; transition: none; }
+.phase-reveal .geo-map { border-radius: 0; border: 0; cursor: grab; }
+.phase-reveal .geo-lock { display: none; }
+.phase-reveal .geo-photo {
+  inset: auto auto 12px 12px; width: 240px; height: 150px; z-index: 3; border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.4); background: #000; cursor: default;
+}
+
+.geo-results {
+  position: absolute; top: 12px; right: 12px; z-index: 3; width: min(360px, calc(100% - 24px)); max-height: calc(100% - 24px);
+  overflow: auto; background: rgba(28, 22, 58, 0.94); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: var(--radius);
+  padding: 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.geo-results[hidden] { display: none; }
+.geo-results h3 { margin: 0; font-size: 16px; }
+.geo-credit { text-align: left; }
+.geo-rows, .geo-final { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.geo-rows li, .geo-final li {
+  display: flex; align-items: center; gap: 8px; background: rgba(0, 0, 0, 0.25); padding: 6px 10px; border-radius: 8px; font-size: 13px;
+}
+.geo-rows li.me, .geo-final li.me { outline: 1px solid var(--accent); }
+.geo-rows .rank, .geo-final .rank { width: 1.8em; text-align: center; }
+.geo-rows .who { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.geo-rows small { color: var(--muted); font-size: 11px; }
+.geo-rows .pts { display: flex; flex-direction: column; align-items: flex-end; color: var(--win); }
+.geo-rows .pts small { color: var(--accent); }
+.geo-rows .total { min-width: 3.5em; text-align: right; font-weight: 700; color: var(--muted); }
+.geo-final .who { flex: 1; text-align: left; }
+.geo-next { margin: 0; font-size: 12px; }
+
+.geo-overlay { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; background: rgba(10, 6, 30, 0.6); padding: 16px; }
+.geo-overlay[hidden] { display: none; }
+.geo-overlay .panel { width: min(420px, 100%); }
+.small-print { font-size: 11px !important; opacity: 0.8; }
+.geo-spinner { font-size: 44px; animation: spin 1.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.geo-pin-wrap { background: none; border: 0; }
+.geo-pin {
+  width: 22px; height: 22px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); margin: 0 auto;
+  background: var(--c); border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+.geo-pin-label {
+  position: absolute; left: 50%; top: -20px; transform: translateX(-50%); white-space: nowrap;
+  background: rgba(0, 0, 0, 0.75); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 6px;
+}
+.geo-answer { font-size: 30px; line-height: 1; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6)); }
+.leaflet-container { font: 12px system-ui, sans-serif; }
+
+@media (max-width: 640px) {
+  .geo-top { grid-template-columns: auto auto 1fr; }
+  .geo-guessed .muted { display: none; }
+  .geo-mapbox { visibility: hidden; inset: 8px; width: auto; height: auto; opacity: 1; }
+  .geo-mapbox:hover, .geo-mapbox:focus-within { width: auto; height: auto; }
+  .map-open .geo-mapbox { visibility: visible; }
+  .geo-maptoggle { display: block; position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 4; }
+  .map-open .geo-maptoggle { bottom: auto; top: 12px; }
+  .map-open .geo-maptoggle::after { content: ' ✕'; }
+  .phase-reveal .geo-mapbox { visibility: visible; inset: 0 0 45% 0; }
+  .phase-reveal .geo-maptoggle, .phase-lobby .geo-maptoggle, .phase-loading .geo-maptoggle, .phase-over .geo-maptoggle { display: none; }
+  .phase-reveal .geo-photo { display: none; }
+  .geo-results { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 45%; border-radius: var(--radius) var(--radius) 0 0; }
+}

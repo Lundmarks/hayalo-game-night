@@ -1,54 +1,16 @@
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, test } from 'node:test';
+import { test } from 'node:test';
 import { Terrain } from '../src/shared/artillery/terrain.ts';
 import type { ArtState } from '../src/shared/artillery/types.ts';
-import type { Player } from '../src/shared/protocol.ts';
 import { artillery } from '../src/server/games/artillery.ts';
-import type { GameContext } from '../src/server/games/index.ts';
+import { clock, fakeRoom } from './fake-room.ts';
 
-// A fake room with a hand-cranked clock, so timers run only when we say so.
-let now = 1_000_000;
-const realNow = Date.now;
-beforeEach(() => {
-  now = 1_000_000;
-  Date.now = () => now;
-});
-afterEach(() => {
-  Date.now = realNow;
-});
-
-function room(ids: string[]) {
-  let players: Player[] = ids.map((id) => ({ id, name: id, avatarUrl: null }));
-  let timers: { at: number; fn: () => void }[] = [];
-  const ctx: GameContext = {
-    broadcast() {},
-    emit() {},
-    players: () => players,
-    hostId: () => players[0]?.id ?? null,
-    setTimer: (ms, fn) => void timers.push({ at: now + ms, fn }),
-  };
-  const s = artillery.create(ctx) as ArtState;
-  const act = (pid: string, a: object) => artillery.action(s, pid, a, ctx);
-  /** Move the clock forward, firing timers in order (including ones they schedule). */
-  const advance = (ms: number) => {
-    const end = now + ms;
-    for (;;) {
-      timers.sort((a, b) => a.at - b.at);
-      const t = timers[0];
-      if (!t || t.at > end) break;
-      timers.shift();
-      now = t.at;
-      t.fn();
-    }
-    now = end;
-  };
-  const leave = (pid: string) => {
-    players = players.filter((p) => p.id !== pid);
-    artillery.playerLeft!(s, pid, ctx);
-  };
-  const rejoin = (pid: string) => players.push({ id: pid, name: pid, avatarUrl: null });
-  return { s, ctx, act, advance, leave, rejoin };
-}
+const room = (ids: string[]) => {
+  const r = fakeRoom(artillery, ids);
+  return { ...r, s: r.s as ArtState };
+};
+// Shorthand so the tests read like the old helper.
+const nowOf = () => clock.now;
 
 function startMatch(ids: string[], wormsPerTeam = 2) {
   const r = room(ids);
@@ -132,9 +94,9 @@ test('turn time is extended while a jump animation plays', () => {
   const endsAt = r.s.turn!.endsAt;
   r.act(pid, { a: 'jump' });
   assert.ok(r.s.turn!.endsAt > endsAt);
-  r.advance(endsAt - now + 10); // past the original deadline
+  r.advance(endsAt - nowOf() + 10); // past the original deadline
   assert.equal(r.s.turn!.no, no);
-  r.advance(r.s.turn!.endsAt - now + 10);
+  r.advance(r.s.turn!.endsAt - nowOf() + 10);
   assert.notEqual(r.s.turn!.no, no);
 });
 

@@ -35,6 +35,10 @@ README.md covers setup, Discord portal config, and architecture. Read it first.
   replay frame by frame (`view.ts`). Craters are applied in order by index.
 - **Sound** is fully synthesized in `src/client/audio.ts` (no asset files). Game
   sounds are triggered from timeline events so every client hears the same thing.
+- **Hay, Where? hides the answer.** The answer and everyone's pins live in the
+  module's private WeakMap until the reveal; the shared state only has an opaque
+  photo token and who has locked in. Keep it that way when adding features. The
+  photo source is injected (`createGeoGame(source)`) so tests use fake photos.
 - Client views implement `GameView` (`update`, `event`, `destroy`) and are
   registered in `VIEWS` in `src/client/main.ts`. Clicks use `data-act` (JSON game
   action) or `data-cmd`.
@@ -52,6 +56,10 @@ Working:
   follows the action on narrow screens, keyboard + touch controls, synthesized
   audio with panning. Surrender (tap twice), forfeit after 60s disconnected,
   turn clock paused during jump/fall animations, per-team worm rotation by id.
+- Hay, Where? (geoguess): Wikimedia Commons photos, Leaflet + OSM map, rounds
+  3/5/10, 30/60/90s, 15s rush after the first lock-in, speed bonus, reveal map
+  with all pins, auto-advance, host skip/next/end, click-to-zoom photo, phone layout
+  with a map toggle. Not yet checked by eye in a browser or in Discord.
 
 Not set up: production hosting.
 
@@ -61,6 +69,14 @@ Known gaps (artillery):
 1. No retreat time after firing (classic Worms gives ~3s to run).
 2. Late joiners can only spectate an artillery match in progress.
 3. No in-match team list showing who is out / offline.
+
+Hay, Where? ideas:
+- Region packs (only Europe / only Asia / a country) via Commons search terms.
+- A pixel/blur mode or a "no zooming" mode for harder rounds.
+- Show the round-by-round history on the final screen.
+- Photo tokens expire after 2h, so a lobby left open that long fails the first
+  photo (the host can skip). Refresh the prefetch if it's old.
+- The tile proxy is open to anyone who finds it; rate-limit it before going public.
 
 Features worth adding:
 - Sudden death (rising water after N turns) so matches end.

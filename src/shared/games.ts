@@ -27,6 +27,14 @@ export const GAMES: GameInfo[] = [
     description: 'Worms-style turn-based war on a destructible island. Bazookas, grenades, air strikes and the Holy Hay Bomb.',
     available: true,
   },
+  {
+    id: 'geoguess',
+    name: 'Hay, Where?',
+    emoji: '🌍',
+    players: 'Everyone',
+    description: 'A photo from somewhere on Earth. Drop a pin where you think it was taken. Closest and quickest wins.',
+    available: true,
+  },
 ];
 
 // ---- Tic-tac-toe ----
