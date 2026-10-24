@@ -18,7 +18,7 @@ const nowOf = () => clock.now;
 function startMatch(ids: string[], wormsPerTeam = 2, opts: { crates?: boolean; suddenDeath?: number } = {}) {
   const r = room(ids);
   for (const id of ids) r.act(id, { a: 'join' });
-  r.act(ids[0], { a: 'settings', wormsPerTeam, crates: opts.crates ?? false, suddenDeath: opts.suddenDeath ?? 0 });
+  r.act(ids[0], { a: 'settings', wormsPerTeam, crates: opts.crates ?? false, suddenDeath: opts.suddenDeath ?? 0, mines: 0 });
   r.act(ids[0], { a: 'start' });
   assert.equal(r.s.phase, 'aiming');
   return r;

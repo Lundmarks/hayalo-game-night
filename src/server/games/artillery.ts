@@ -1,4 +1,4 @@
-import { crateTouching, fire, FPS, grounded, killCamExtraMs, openCrate, Sim, walk, WORM_R, type SimInput } from '../../shared/artillery/sim.ts';
+import { crateTouching, fire, FPS, grounded, killCamExtraMs, MINE_R, mineNear, openCrate, Sim, walk, WORM_R, type SimInput } from '../../shared/artillery/sim.ts';
 import { MAT, Terrain, W, WATER_Y } from '../../shared/artillery/terrain.ts';
 import { politicianNames } from '../../shared/artillery/politicians.ts';
 import {
@@ -10,7 +10,6 @@ import { QUIET, type GameContext, type GameModule } from './module.ts';
 const MAX_TEAMS = 6;
 // How long a player can be disconnected mid-match before their team forfeits.
 const GRACE_MS = 60_000;
-const RETREAT_FRAMES = RETREAT_SECONDS * FPS;
 const CRATE_CHANCE = 0.4; // chance of a crate drop between turns
 const MAX_CRATES = 5;
 const FLOOD_STEP = 22; // px the water rises each turn in sudden death
@@ -23,6 +22,7 @@ type Shot = {
   wormId: number;
   start: number; // server ms when the shot was fired
   until: number; // retreat moves are accepted until this time
+  retreatFrames: number; // how long the retreat lasts, in sim frames
   seed: number;
   weapon: WeaponId;
   angle: number;
@@ -65,7 +65,32 @@ function isMyTurn(s: ArtState, playerId: string) {
   return s.phase === 'aiming' && !!s.turn && s.teams[s.turn.team]?.playerId === playerId;
 }
 
-const newSim = (s: ArtState, extra: { seed?: number } = {}) => new Sim(P(s).terrain!, s.worms, s.craters, s.wind, { water: s.water, crates: s.crates, ...extra });
+/** An id no crate or mine has used yet. */
+function nextCrateId(s: ArtState) {
+  const p = P(s);
+  p.crateSeq = Math.max(p.crateSeq, ...s.crates.map((c) => c.id));
+  return p.crateSeq + 1;
+}
+
+const newSim = (s: ArtState, extra: { seed?: number } = {}) =>
+  new Sim(P(s).terrain!, s.worms, s.craters, s.wind, { water: s.water, crates: s.crates, nextId: nextCrateId(s), ...extra });
+
+/** Scatter mines over open land at the start, away from worms and each other. */
+function placeMines(s: ArtState, terrain: Terrain) {
+  for (let n = 0, tries = 0; n < s.mineCount && tries < 1500; tries++) {
+    // Small maps run out of room, so the spacing loosens as the tries go on.
+    const loose = tries > 600;
+    const x = Math.round(60 + Math.random() * (W - 120));
+    const top = terrain.surfaceY(x);
+    if (top < 60 || top > WATER_Y - 30 || Math.abs(terrain.surfaceY(x - 4) - terrain.surfaceY(x + 4)) > (loose ? 10 : 6)) continue;
+    const y = top - MINE_R;
+    if (s.worms.some((w) => Math.hypot(w.x - x, w.y - y) < 70)) continue;
+    if (s.crates.some((c) => Math.abs(c.x - x) < (loose ? 24 : 40))) continue;
+    s.crates.push({ id: nextCrateId(s), x, y, kind: 'mine' });
+    P(s).crateSeq++;
+    n++;
+  }
+}
 
 function startMatch(s: ArtState, ctx: GameContext) {
   const seed = Math.floor(Math.random() * 2 ** 31);
@@ -73,6 +98,7 @@ function startMatch(s: ArtState, ctx: GameContext) {
   const p = P(s);
   p.terrain = terrain;
   p.shot = null;
+  p.crateSeq = 0;
   s.seed = seed;
   s.craters = [];
   s.crates = [];
@@ -117,6 +143,7 @@ function startMatch(s: ArtState, ctx: GameContext) {
     const team = Math.floor(id / s.wormsPerTeam);
     s.worms.push({ id, team, name: names[id], x, y, hp: 100, alive: true, facing: x < W / 2 ? 1 : -1 });
   }
+  placeMines(s, terrain);
   s.turn = null;
   nextTurn(s, ctx, Math.floor(Math.random() * s.teams.length) - 1);
 }
@@ -231,6 +258,8 @@ const animMs = (tl: Timeline) => (tl.frames / FPS) * 1000 + killCamExtraMs(tl) +
  */
 function recordStats(s: ArtState, tl: Timeline, by: number | null, weapon?: WeaponId) {
   const st = s.stats;
+  // Stepping on a mine counts as being blown up by one.
+  if (!weapon && by !== null && tl.events.some((e) => e.type === 'explode' && e.kind === 'mine')) weapon = 'mine';
   const shooter = by === null ? null : s.worms.find((w) => w.id === by);
   const team = (id: number) => s.worms.find((w) => w.id === id)?.team ?? -1;
   let damage = 0;
@@ -283,7 +312,7 @@ function simulateShot(s: ArtState): Timeline | null {
   const sim = newSim(s, { seed: sh.seed });
   if (!fire(sim, p.terrain!, worm, sh.weapon, sh.angle, sh.power, sh.tx, sh.ty)) return null;
   sim.inputs = sh.inputs;
-  sim.minFrames = RETREAT_FRAMES;
+  sim.minFrames = sh.retreatFrames;
   return sim.run();
 }
 
@@ -306,7 +335,7 @@ function retreatMove(s: ArtState, ctx: GameContext, pid: string, kind: SimInput[
   const last = sh.inputs.at(-1)?.f ?? 0;
   // A couple of frames ahead of the server clock so clients haven't played past it yet.
   const f = Math.max(last + 1, Math.ceil(((now - sh.start) / 1000) * FPS) + 2);
-  if (f >= RETREAT_FRAMES) return false;
+  if (f >= sh.retreatFrames) return false;
   sh.inputs.push({ f, wormId: sh.wormId, kind, dir });
   publishShot(s, ctx, simulateShot(s)!, true);
   return true;
@@ -333,14 +362,16 @@ function betweenTurns(s: ArtState, ctx: GameContext) {
   if (checkOver(s)) return;
   const p = P(s);
   const flood = s.sdTurn > 0 && (s.turn?.no ?? 0) >= s.sdTurn && s.water > MIN_WATER;
-  const dropX = s.cratesOn && s.crates.length < MAX_CRATES && Math.random() < CRATE_CHANCE ? crateSpot(s) : null;
+  const crates = s.crates.filter((c) => c.kind !== 'mine').length;
+  const dropX = s.cratesOn && crates < MAX_CRATES && Math.random() < CRATE_CHANCE ? crateSpot(s) : null;
   if (!flood && dropX === null) return nextTurn(s, ctx);
 
   const sim = newSim(s);
   if (flood) sim.flood(Math.max(MIN_WATER, s.water - FLOOD_STEP));
   if (dropX !== null) {
     const weapon = Math.random() < 0.55 ? CRATE_WEAPONS[Math.floor(Math.random() * CRATE_WEAPONS.length)] : undefined;
-    sim.dropCrate({ id: ++p.crateSeq, x: dropX, y: 0, kind: weapon ? 'weapon' : 'health', weapon });
+    p.crateSeq = nextCrateId(s);
+    sim.dropCrate({ id: p.crateSeq, x: dropX, y: 0, kind: weapon ? 'weapon' : 'health', weapon });
   }
   const tl = sim.run();
   s.water = Math.round(sim.water);
@@ -371,6 +402,7 @@ export const artillery: GameModule<ArtState> = {
       crates: [],
       cratesOn: true,
       suddenDeath: 8,
+      mineCount: 5,
       sdTurn: 0,
       stats: emptyStats(0),
     };
@@ -412,6 +444,8 @@ export const artillery: GameModule<ArtState> = {
         const wpt = num(a.wormsPerTeam, 1, 4);
         const secs = num(a.turnSeconds, 20, 90);
         const sd = num(a.suddenDeath, 0, 30);
+        const mines = num(a.mines, 0, 20);
+        if (mines !== null) s.mineCount = Math.round(mines);
         if (wpt !== null) s.wormsPerTeam = Math.round(wpt);
         if (secs !== null) s.turnSeconds = Math.round(secs);
         if (sd !== null) s.suddenDeath = Math.round(sd);
@@ -467,7 +501,8 @@ export const artillery: GameModule<ArtState> = {
         worm.facing = dir;
         // No walking budget: like the classic game, the turn clock is the limit.
         const { fell } = walk(p.terrain!, worm, dir, 3);
-        if (fell) {
+        // Falling, or stepping near a mine: let the physics play it out.
+        if (fell || mineNear(s.crates, worm)) {
           runMoveSim(s, ctx, newSim(s));
           return;
         }
@@ -524,11 +559,13 @@ export const artillery: GameModule<ArtState> = {
 
         const worm = currentWorm(s)!;
         if (WEAPON_BY_ID[a.weapon].aim === 'angle') worm.facing = Math.cos(angle) >= 0 ? 1 : -1;
+        const runFor = WEAPON_BY_ID[a.weapon].retreat ?? RETREAT_SECONDS;
         p.shot = {
           playerId: pid,
           wormId: worm.id,
           start: now,
-          until: now + RETREAT_SECONDS * 1000,
+          until: now + runFor * 1000,
+          retreatFrames: runFor * FPS,
           seed: Math.floor(Math.random() * 2 ** 31),
           weapon: a.weapon,
           angle,

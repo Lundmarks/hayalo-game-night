@@ -17,11 +17,16 @@ export const WORM_R = 9;
 export const MAX_CLIMB = 5;
 const FALL_SAFE = 340; // landing faster than this (px/s) hurts
 export const CRATE_R = 8; // half the crate's size
+export const MINE_R = 4; // half a mine's height
+export const MINE_TRIGGER = 26; // a worm this close (centre to centre) arms a mine
+const MINE_FUSE = 60; // frames from armed to boom
+const MINE_IDLE = 2 * FPS; // a freshly placed mine waits this long before it can arm
+const halfOf = (c: Crate) => (c.kind === 'mine' ? MINE_R : CRATE_R);
 const PARA_SPEED = 170; // crates float down this fast (px/s)
 export const FLOOD_FRAMES = 90; // how long the water takes to rise each turn
 
 export type SimInput = { f: number; wormId: number; kind: 'walk' | 'jump'; dir: 1 | -1 };
-type SimOpts = { water?: number; seed?: number; crates?: Crate[] };
+type SimOpts = { water?: number; seed?: number; crates?: Crate[]; nextId?: number };
 
 // radius 0 = no crater (the effect is handled in detonate). bounce: how much
 // speed a bouncy one keeps off the ground.
@@ -42,6 +47,7 @@ const PROJ: Record<ProjKind, ProjSpec> = {
   house: { radius: 46, damage: 55, fuse: 0, bouncy: false, wind: false },
   can: { radius: 0, damage: 24, fuse: 0, bouncy: false, wind: true },
   duck: { radius: 38, damage: 48, fuse: 5 * FPS, bouncy: true, wind: false, bounce: 0.82 },
+  dynamite: { radius: 62, damage: 70, fuse: 5 * FPS, bouncy: true, wind: false, bounce: 0.1 },
 };
 
 const SHEEP_SPEED = 80; // px/s
@@ -145,7 +151,12 @@ export function frameAt(k: ReturnType<typeof killCam>, secs: number) {
 
 /** The crate a worm at its current spot is touching, if any. */
 export function crateTouching(crates: Crate[], w: Worm) {
-  return crates.find((c) => Math.abs(w.x - c.x) < WORM_R + CRATE_R && Math.abs(w.y - c.y) < WORM_R + CRATE_R);
+  return crates.find((c) => c.kind !== 'mine' && Math.abs(w.x - c.x) < WORM_R + CRATE_R && Math.abs(w.y - c.y) < WORM_R + CRATE_R);
+}
+
+/** A mine close enough to this worm to go off. */
+export function mineNear(crates: Crate[], w: Worm) {
+  return crates.find((c) => c.kind === 'mine' && Math.hypot(w.x - c.x, w.y - c.y) < MINE_TRIGGER);
 }
 
 /** Give a worm what's in a crate. Weapons go to the team's ammo, which the caller handles. */
@@ -172,6 +183,9 @@ export class Sim {
   private crates: Crate[];
   private cratesSeen: Timeline['crates'];
   private crateMovers = new Map<number, CrateMover>();
+  private mineFuse = new Map<number, number>(); // armed mine id -> frame it goes off
+  private mineIdle = new Map<number, number>(); // placed mine id -> frame it can arm from
+  private nextId: number;
   /** Moves by the shooter during the retreat, each applied at its frame. */
   inputs: SimInput[] = [];
   /** Keep the timeline going at least this long (the retreat window). */
@@ -189,6 +203,7 @@ export class Sim {
     this.rand = rng(opts.seed ?? Math.floor(Math.random() * 2 ** 31));
     this.crates = opts.crates ?? [];
     this.cratesSeen = this.crates.map((c) => ({ ...c, from: 0 }));
+    this.nextId = opts.nextId ?? Math.max(0, ...this.crates.map((c) => c.id)) + 1;
   }
 
   event(e: Omit<SimEvent, 'f'>) {
@@ -319,9 +334,14 @@ export class Sim {
       this.knock(w, nx * kv, ny * kv - 160 * f);
     }
 
-    // Crates in the blast break open. Weapon crates go off too.
+    // Crates in the blast break open. Weapon crates go off too, and mines set each other off.
     for (const c of [...this.crates]) {
-      if (Math.hypot(c.x - x, c.y - y) >= r + CRATE_R) continue;
+      // Mines are touchy: the shock wave sets them off a little past the crater.
+      if (Math.hypot(c.x - x, c.y - y) >= r + halfOf(c) + (c.kind === 'mine' ? 10 : 0)) continue;
+      if (c.kind === 'mine') {
+        this.detonateMine(c, 5);
+        continue;
+      }
       this.removeCrate(c, c.y);
       this.event({ type: 'crate', kind: 'destroy', x: c.x, y: c.y, crateId: c.id });
       if (c.kind === 'weapon') this.later(4, () => this.explode(c.x, c.y, 22, 22, 'crate'));
@@ -343,11 +363,50 @@ export class Sim {
     const m = this.crateMovers.get(c.id);
     if (m) this.endTrack(m.track, c.x, y);
     this.crateMovers.delete(c.id);
+    this.mineFuse.delete(c.id);
+    this.mineIdle.delete(c.id);
     this.crates.splice(this.crates.indexOf(c), 1);
   }
 
+  // ---- mines ----
+
+  /** Set a mine down at x,y (it falls to the ground from there). Returns its id. */
+  placeMine(x: number, y: number) {
+    const c: Crate = { id: this.nextId++, x: Math.round(x), y: Math.round(y), kind: 'mine' };
+    // Placed against a slope or wall: sit on top of it, not inside it.
+    while (this.t.solid(c.x, c.y + MINE_R - 1) && c.y > 0) c.y--;
+    this.crates.push(c);
+    this.cratesSeen.push({ ...c, from: this.frame });
+    this.mineIdle.set(c.id, this.frame + MINE_IDLE);
+    this.event({ type: 'crate', kind: 'place', x: c.x, y: c.y, crateId: c.id });
+    return c.id;
+  }
+
+  /** Take a mine off the map and blow it up `delay` frames from now. */
+  private detonateMine(c: Crate, delay: number) {
+    this.removeCrate(c, c.y);
+    this.event({ type: 'crate', kind: 'detonate', x: c.x, y: c.y, crateId: c.id });
+    this.later(delay, () => this.explode(c.x, c.y, 30, 45, 'mine'));
+  }
+
+  /** Mines arm when a living worm comes close, beep for a second, then blow. */
+  private stepMines() {
+    for (const c of [...this.crates]) {
+      if (c.kind !== 'mine') continue;
+      const fuse = this.mineFuse.get(c.id);
+      if (fuse !== undefined) {
+        if (this.frame >= fuse) this.detonateMine(c, 0);
+        continue;
+      }
+      if (this.frame < (this.mineIdle.get(c.id) ?? 0)) continue;
+      if (!this.worms.some((w) => w.alive && Math.hypot(w.x - c.x, w.y - c.y) < MINE_TRIGGER)) continue;
+      this.mineFuse.set(c.id, this.frame + MINE_FUSE);
+      this.event({ type: 'crate', kind: 'arm', x: c.x, y: c.y, crateId: c.id });
+    }
+  }
+
   private crateSupported(c: Crate) {
-    const b = c.y + CRATE_R;
+    const b = c.y + halfOf(c);
     // Narrower than the crate, so one hanging off a ledge by its corner tips off.
     return this.t.solid(c.x - 3, b) || this.t.solid(c.x, b) || this.t.solid(c.x + 3, b);
   }
@@ -373,7 +432,7 @@ export class Sim {
         }
         if (this.crateSupported(c)) {
           c.y = Math.round(c.y);
-          while (this.t.solid(c.x, c.y + CRATE_R - 1) && c.y > 0) c.y--;
+          while (this.t.solid(c.x, c.y + halfOf(c) - 1) && c.y > 0) c.y--;
           this.endTrack(m.track, c.x, c.y);
           this.crateMovers.delete(c.id);
           this.event({ type: 'crate', kind: 'land', x: c.x, y: c.y, crateId: c.id, amount: Math.round(m.vy) });
@@ -755,13 +814,14 @@ export class Sim {
       this.projs = this.projs.filter((p) => !p.dead);
       for (const m of [...this.movers.values()]) this.stepMover(m);
       this.stepCrates();
+      this.stepMines();
       this.stepFlood();
       this.settle();
       this.pickups();
 
       this.frame++;
       this.sample();
-      const busy = this.projs.length || this.movers.size || this.spawns.length || this.crateMovers.size || this.flooding;
+      const busy = this.projs.length || this.movers.size || this.spawns.length || this.crateMovers.size || this.mineFuse.size || this.flooding;
       if (!busy && this.frame >= this.minFrames) break;
     }
 
@@ -813,6 +873,16 @@ export function fire(sim: Sim, t: Terrain, w: Worm, weapon: WeaponId, angle: num
     const p = sim.launch('sheep', w.x + dir * 10, w.y - 4, dir * 60, -160, w.id);
     p.dir = dir;
     sim.event({ type: 'fire', x: w.x + dir * 10, y: w.y - 4, kind: 'sheep' });
+    return true;
+  }
+  if (weapon === 'dynamite' || weapon === 'mine') {
+    // Set down just in front of the worm.
+    const dir: 1 | -1 = Math.cos(angle) >= 0 ? 1 : -1;
+    w.facing = dir;
+    const x = w.x + dir * 13;
+    if (weapon === 'mine') sim.placeMine(x, w.y);
+    else sim.launch('dynamite', x, w.y - 2, dir * 30, -50, w.id);
+    sim.event({ type: 'fire', x, y: w.y, kind: weapon });
     return true;
   }
   if (weapon === 'bat') {

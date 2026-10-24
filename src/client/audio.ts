@@ -12,7 +12,7 @@ export type Sound =
   | 'plane' | 'whistle' | 'teleport' | 'jump' | 'land' | 'hurt' | 'die' | 'holy' | 'fuse' | 'step'
   | 'boing' | 'bonk' | 'pop' | 'slide' | 'bubbles' | 'ricochet' | 'chirp' | 'whoosh' | 'hup' | 'sadTrombone'
   | 'pickup' | 'heal' | 'crateLand' | 'parachute' | 'flood' | 'alarm' | 'retreat' | 'slowmo'
-  | 'truddelutt' | 'hayalo' | 'bat' | 'baa' | 'quack' | 'squeak' | 'ping' | 'zap' | 'stink' | 'crash' | 'syringe'
+  | 'beep' | 'sizzle' | 'truddelutt' | 'hayalo' | 'bat' | 'baa' | 'quack' | 'squeak' | 'ping' | 'zap' | 'stink' | 'crash' | 'syringe'
   | 'click' | 'select' | 'yourTurn' | 'turn' | 'tick' | 'win' | 'lose' | 'place';
 
 type Opts = { pan?: number; gain?: number; pitch?: number };
@@ -401,6 +401,17 @@ const RECIPES: Record<Sound, Recipe> = {
       }
     }
     return 1.3;
+  },
+  beep: (a, out, t) => {
+    // A mine's warning beep.
+    a.tone(out, t, { type: 'square', from: 1760, peak: 0.07, decay: 0.06 });
+    return 0.08;
+  },
+  sizzle: (a, out, t) => {
+    // A burning fuse.
+    a.burst(out, t, { type: 'highpass', from: 4500, attack: 0.02, peak: 0.07, decay: 0.4 });
+    a.burst(out, t + 0.1, { type: 'bandpass', from: 3000, q: 4, peak: 0.05, decay: 0.05 });
+    return 0.45;
   },
   bat: (a, out, t, p) => {
     // Swish, then a wooden CRACK.

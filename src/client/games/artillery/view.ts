@@ -5,7 +5,7 @@ import { CRATE_HEALTH, RETREAT_SECONDS, WEAPONS, WEAPON_BY_ID, type ArtEvent, ty
 import type { Player, RoomView } from '../../../shared/protocol.ts';
 import { audio, type Sound } from '../../audio.ts';
 import { esc, toast, type ViewFactory } from '../../ui.ts';
-import { buildBackdrop, buildTerrainCanvas, drawBackdrop, carveCanvas, drawBird, drawBubble, drawCloud, drawCrate, drawGrave, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles, weaponIcon } from './render.ts';
+import { buildBackdrop, buildTerrainCanvas, drawBackdrop, carveCanvas, drawBird, drawBubble, drawCloud, drawCrate, drawGrave, drawMine, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles, weaponIcon } from './render.ts';
 
 type Playback = {
   tl: Timeline;
@@ -15,7 +15,8 @@ type Playback = {
   alive: Map<number, boolean>;
   wormTracks: Map<number, Track[]>;
   crateTracks: Map<number, Track[]>;
-  gone: Set<number>; // crates picked up, destroyed or sunk so far
+  gone: Set<number>; // crates picked up, destroyed or sunk so far (and mines gone off)
+  armed: Set<number>; // mines beeping
   flood: { from: number; to: number; f0: number } | null;
   lastF: number; // last frame played, so a replacement timeline can pick up from there
   fx: Set<string>; // one-off effects already played (fuse ticks, whistles…)
@@ -24,7 +25,7 @@ type Playback = {
 };
 
 // Things the player aims and throws (for the last-shot trail).
-const PROJECTILES = new Set(['rocket', 'grenade', 'cluster', 'haybomb', 'banana', 'syringe', 'sheep', 'rose', 'can', 'duck']);
+const PROJECTILES = new Set(['rocket', 'grenade', 'cluster', 'haybomb', 'banana', 'syringe', 'sheep', 'rose', 'can', 'duck', 'dynamite']);
 const FUSED = new Set(['grenade', 'haybomb', 'banana']);
 
 // Little drawn icons for the end screen (emoji don't render everywhere).
@@ -346,6 +347,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       wormTracks: tracksBy(tl, 'worm'),
       crateTracks: tracksBy(tl, 'crate'),
       gone: new Set(),
+      armed: new Set(),
       flood: null,
       lastF: 0,
       fx: new Set(),
@@ -370,6 +372,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     p.hp = new Map(tl.before.map((w) => [w.id, w.hp]));
     p.alive = new Map(tl.before.map((w) => [w.id, w.alive]));
     p.gone = new Set();
+    p.armed = new Set();
     p.flood = null;
     p.kc = killCam(tl);
     p.ev = 0;
@@ -407,7 +410,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         if (e.kind === 'health') p.hp.set(e.wormId!, (p.hp.get(e.wormId!) ?? 0) + (e.amount ?? 0));
         break;
       case 'crate':
-        if (e.kind === 'destroy' || e.kind === 'sink') p.gone.add(e.crateId!);
+        if (e.kind === 'destroy' || e.kind === 'sink' || e.kind === 'detonate') p.gone.add(e.crateId!);
+        if (e.kind === 'arm') p.armed.add(e.crateId!);
         break;
       case 'die':
         p.alive.set(e.wormId!, false);
@@ -473,6 +477,10 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         parts.muzzle(e.x, e.y, Math.atan2(e.y - shooter[1], e.x - shooter[0]));
         if (e.kind === 'sheep') {
           sfx('baa', e.x);
+          break;
+        }
+        if (e.kind === 'mine' || e.kind === 'dynamite') {
+          if (e.kind === 'dynamite') sfx('sizzle', e.x);
           break;
         }
         if (e.kind === 'house') {
@@ -586,6 +594,11 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         break;
       case 'crate':
         if (e.kind === 'drop') sfx('parachute', e.x);
+        else if (e.kind === 'place') sfx('crateLand', e.x, 0.6);
+        else if (e.kind === 'arm') {
+          sfx('beep', e.x);
+          comic(e.x, e.y - 14, '!', 22, '#ff5b5b');
+        }
         else if (e.kind === 'land') {
           parts.dust(e.x, e.y + 8, 5, 0.8);
           sfx('crateLand', e.x);
@@ -660,6 +673,15 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       sfx('slowmo', p.kc.x);
     }
     while (p.ev < p.tl.events.length && p.tl.events[p.ev].f <= f) handleEvent(p.tl.events[p.ev++]);
+    // Armed mines beep five times a second until they go off.
+    for (const id of p.armed) {
+      if (p.gone.has(id)) continue;
+      const k = `mine${id}:${Math.floor(f / 12)}`;
+      if (p.fx.has(k)) continue;
+      p.fx.add(k);
+      const c = p.tl.crates.find((x) => x.id === id);
+      sfx('beep', c?.x, 0.7);
+    }
 
     for (const tr of p.tl.tracks) {
       if (tr.kind === 'worm' || f < tr.start || f > tr.end) continue;
@@ -693,6 +715,14 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         if (!p.fx.has(k)) {
           p.fx.add(k);
           if (f > tr.start + 20) sfx('baa', x, 0.45);
+        }
+      }
+      if (tr.kind === 'dynamite') {
+        if (Math.random() < 0.6) parts.fuseSpark(x + 5, y - 11);
+        const k = `${tr.key}:z${Math.floor((f - tr.start) / 27)}`;
+        if (!p.fx.has(k)) {
+          p.fx.add(k);
+          sfx('sizzle', x, 0.8);
         }
       }
       if (tr.kind === 'duck') {
@@ -813,10 +843,11 @@ export const createArtilleryView: ViewFactory = (root, send) => {
                   <label>Worms each ${[1, 2, 3, 4].map((n) => `<button class="chip ${s!.wormsPerTeam === n ? 'on' : ''}" data-art="wpt:${n}">${n}</button>`).join('')}</label>
                   <label>Turn time ${[30, 45, 60].map((n) => `<button class="chip ${s!.turnSeconds === n ? 'on' : ''}" data-art="secs:${n}">${n}s</button>`).join('')}</label>
                   <label>Crates ${[true, false].map((on) => `<button class="chip ${s!.cratesOn === on ? 'on' : ''}" data-art="crates:${on ? 1 : 0}">${on ? 'On' : 'Off'}</button>`).join('')}</label>
+                  <label>Mines ${[0, 5, 10].map((n) => `<button class="chip ${s!.mineCount === n ? 'on' : ''}" data-art="mines:${n}">${n || 'Off'}</button>`).join('')}</label>
                   <label title="After this many rounds the water starts rising every turn">Sudden death ${[0, 4, 8, 12].map((n) => `<button class="chip ${s!.suddenDeath === n ? 'on' : ''}" data-art="sd:${n}">${n ? `${n} rounds` : 'Off'}</button>`).join('')}</label>
                 </div>
                 <button class="btn start" data-art="start" ${s.teams.length ? '' : 'disabled'}>${s.teams.length === 1 ? 'Start solo practice' : 'Start match'}</button>`
-              : `<p class="muted">Worms each: ${s.wormsPerTeam} · Turn time: ${s.turnSeconds}s · Crates: ${s.cratesOn ? 'on' : 'off'} · Sudden death: ${s.suddenDeath ? `after ${s.suddenDeath} rounds` : 'off'}<br>Waiting for the host to start…</p>`
+              : `<p class="muted">Worms each: ${s.wormsPerTeam} · Turn time: ${s.turnSeconds}s · Crates: ${s.cratesOn ? 'on' : 'off'} · Mines: ${s.mineCount || 'off'} · Sudden death: ${s.suddenDeath ? `after ${s.suddenDeath} rounds` : 'off'}<br>Waiting for the host to start…</p>`
           }
         </div>`;
     } else if (s.phase === 'over') {
@@ -1007,6 +1038,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (cmd.startsWith('wpt:')) send({ a: 'settings', wormsPerTeam: Number(cmd.slice(4)) });
     else if (cmd.startsWith('secs:')) send({ a: 'settings', turnSeconds: Number(cmd.slice(5)) });
     else if (cmd.startsWith('crates:')) send({ a: 'settings', crates: cmd.endsWith('1') });
+    else if (cmd.startsWith('mines:')) send({ a: 'settings', mines: Number(cmd.slice(6)) });
     else if (cmd.startsWith('sd:')) send({ a: 'settings', suddenDeath: Number(cmd.slice(3)) });
     else send({ a: cmd });
   });
@@ -1467,7 +1499,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         [x, y] = posAt(tr, f);
         para = !!tr.para && f < tr.end;
       }
-      drawCrate(ctx, x, y, c.kind, time, para);
+      if (c.kind === 'mine') drawMine(ctx, x, y, time, !!pb?.armed.has(c.id));
+      else drawCrate(ctx, x, y, c.kind, time, para);
     }
   }
 

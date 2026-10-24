@@ -126,7 +126,7 @@ function match(crates = false) {
   const s = r.s as ArtState;
   r.act('a', { a: 'join' });
   r.act('b', { a: 'join' });
-  r.act('a', { a: 'settings', wormsPerTeam: 3, crates, suddenDeath: 0 });
+  r.act('a', { a: 'settings', wormsPerTeam: 3, crates, suddenDeath: 0, mines: 0 });
   r.act('a', { a: 'start' });
   return { ...r, s };
 }
@@ -164,4 +164,93 @@ test('crates never drop onto a worm', () => {
     }
   }
   assert.ok(drops > 0);
+});
+
+// ---- mines and dynamite ----
+
+test('a mine arms when a worm comes close, then goes off', () => {
+  const t = flat();
+  const w = worm(0, 0, 500);
+  const crates = [{ id: 1, x: 515, y: 396, kind: 'mine' as const }];
+  const tl = new Sim(t, [w], [], 0, { crates }).run();
+  const arm = tl.events.find((e) => e.type === 'crate' && e.kind === 'arm');
+  const boom = tl.events.find((e) => e.type === 'explode' && e.kind === 'mine');
+  assert.ok(arm && boom && boom.f - arm.f >= 55, 'should beep for about a second first');
+  assert.ok(dmg(tl, 0) > 20);
+  assert.equal(crates.length, 0);
+});
+
+test('a mine with nobody near stays put, and a blast sets off mines nearby', () => {
+  const t = flat();
+  const quiet = [{ id: 1, x: 900, y: 396, kind: 'mine' as const }];
+  new Sim(t, [worm(0, 0, 300)], [], 0, { crates: quiet }).run();
+  assert.equal(quiet.length, 1);
+
+  const crates = [
+    { id: 1, x: 600, y: 396, kind: 'mine' as const },
+    { id: 2, x: 640, y: 396, kind: 'mine' as const },
+    { id: 3, x: 1000, y: 396, kind: 'mine' as const },
+  ];
+  const sim = new Sim(t, [], [], 0, { crates });
+  sim.explode(590, 396, 30, 40, 'test');
+  const tl = sim.run();
+  // The first goes off in the blast and its own blast takes the second; the far one survives.
+  assert.equal(tl.events.filter((e) => e.type === 'explode' && e.kind === 'mine').length, 2);
+  assert.deepEqual(crates.map((c) => c.id), [3]);
+});
+
+test('a placed mine waits before arming, so you can walk away', () => {
+  const t = flat();
+  const me = worm(0, 0, 500);
+  const sim = new Sim(t, [me], [], 0, { nextId: 7 });
+  fire(sim, t, me, 'mine', 0, 0);
+  sim.minFrames = 5 * 60;
+  const tl = sim.run();
+  assert.ok(tl.crates.some((c) => c.id === 7 && c.kind === 'mine'));
+  // The owner stood next to it the whole time, but it only arms after 2 seconds.
+  const arm = tl.events.find((e) => e.type === 'crate' && e.kind === 'arm');
+  assert.ok(arm && arm.f >= 120, `armed at frame ${arm?.f}`);
+});
+
+test('dynamite sits where it is dropped and blows up after 5 seconds', () => {
+  const t = flat();
+  const me = worm(0, 0, 500);
+  const foe = worm(1, 1, 530);
+  const sim = new Sim(t, [me, foe], [], 0);
+  fire(sim, t, me, 'dynamite', 0, 1);
+  const tl = sim.run();
+  const boom = tl.events.find((e) => e.type === 'explode' && e.kind === 'dynamite')!;
+  assert.ok(boom.f >= 5 * 60 - 1);
+  assert.ok(Math.abs(boom.x - 513) < 20, `rolled to ${boom.x}`);
+  assert.ok(dmg(tl, 1) > 40);
+});
+
+test('mines are scattered at the start, away from worms, and walking into one sets it off', () => {
+  const r = fakeRoom(artillery, ['a', 'b']);
+  const s = r.s as ArtState;
+  r.act('a', { a: 'join' });
+  r.act('b', { a: 'join' });
+  r.act('a', { a: 'settings', wormsPerTeam: 2, crates: false, suddenDeath: 0, mines: 10 });
+  r.act('a', { a: 'start' });
+  const mines = s.crates.filter((c) => c.kind === 'mine');
+  assert.ok(mines.length >= 6, `only ${mines.length} mines`);
+  for (const m of mines) for (const w of s.worms) assert.ok(Math.hypot(w.x - m.x, w.y - m.y) >= 70);
+
+  // Put a mine on the ground right under the current worm's nose, and take a step.
+  const w = s.worms.find((x) => x.id === s.turn!.wormId)!;
+  s.crates.push({ id: 99, x: w.x + 4, y: w.y + WORM_R - 4, kind: 'mine' });
+  r.act(s.teams[s.turn!.team].playerId, { a: 'walk', dir: 1 });
+  const tl = timelines(r.events).at(-1)!.tl;
+  assert.ok(tl.events.some((e) => e.type === 'explode' && e.kind === 'mine'));
+  assert.ok(!s.crates.some((c) => c.id === 99));
+  assert.equal(s.phase, 'resolving', 'getting blown up ends the turn');
+});
+
+test('dynamite and mines give 5 seconds to run', () => {
+  const r = match();
+  const s = r.s;
+  const pid = s.teams[s.turn!.team].playerId;
+  r.act(pid, { a: 'fire', weapon: 'dynamite', angle: 0, power: 0.5 });
+  const ev = timelines(r.events).at(-1)!;
+  assert.equal(ev.retreat!.until - Date.now(), 5000);
 });

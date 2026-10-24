@@ -111,6 +111,12 @@ Working:
   from worms. Backdrop/water/clouds extend to the visible range on wide screens
   (`drawBackdrop`, `visX0/visX1`). Hay bomb sounds: `truddelutt`, `holy`, `hayalo`.
   Tests for these are in `tests/weapons.test.ts`.
+- Mines and dynamite (2026-10-25): mines are `Crate`s with `kind: 'mine'`
+  (`stepMines`, `placeMine`, `detonateMine` in sim; `placeMines` + lobby
+  `mineCount` on the server; walking near one runs a move sim). Crate/mine ids come
+  from `nextCrateId()` so re-simulated shots get the same ids. `WeaponDef.retreat`
+  gives dynamite and mine 5s to run (`Shot.retreatFrames`). Tests turn mines off
+  (`mines: 0`) unless they test them.
 - Hay, Where? (geoguess): Wikimedia Commons photos, Leaflet + OSM map, rounds
   3/5/10, 30/60/90s, 15s rush after the first lock-in, speed bonus, reveal map
   with all pins, auto-advance, host skip/next/end, click-to-zoom photo, phone layout

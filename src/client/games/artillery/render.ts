@@ -726,6 +726,43 @@ export function drawWorm(ctx: CanvasRenderingContext2D, x: number, y: number, o:
 }
 
 /** Wooden crate (or white first-aid box), on a parachute while it floats down. */
+/** A land mine: a dark dome with a light that blinks slowly, or fast and red once armed. */
+export function drawMine(ctx: CanvasRenderingContext2D, x: number, y: number, time: number, armed: boolean) {
+  ctx.save();
+  ctx.translate(x, y + 4);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.3;
+  ctx.fillStyle = '#4a4f5c';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 7, 2.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#6b7282';
+  ctx.beginPath();
+  ctx.arc(0, -0.5, 5, Math.PI, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(-2, -3, 1.6, 0.9, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+  const on = armed ? Math.sin(time * 28) > 0 : Math.sin(time * 3) > 0.6;
+  ctx.fillStyle = on ? (armed ? '#ff3b3b' : '#7cf29a') : '#3a2a30';
+  ctx.beginPath();
+  ctx.arc(0, -5.6, 1.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  if (armed && on) {
+    ctx.fillStyle = 'rgba(255, 80, 80, 0.35)';
+    ctx.beginPath();
+    ctx.arc(0, -5.6, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 export function drawCrate(ctx: CanvasRenderingContext2D, x: number, y: number, kind: 'health' | 'weapon', time: number, para: boolean) {
   ctx.save();
   ctx.translate(x, y);
@@ -1126,6 +1163,38 @@ const ART = {
     ctx.fillRect(5, -12, 3, 5);
     ctx.strokeRect(5, -12, 3, 5);
   },
+  dynamite(ctx: CanvasRenderingContext2D, time: number, lit = true) {
+    // Three red sticks taped together, with a fuse.
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.2;
+    for (const dx of [-3.4, 0, 3.4]) {
+      ctx.fillStyle = '#d93a2b';
+      ctx.beginPath();
+      ctx.roundRect(dx - 1.8, -6, 3.6, 12, 1.2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#e8dcb8';
+    ctx.fillRect(-5.2, -1.5, 10.4, 3);
+    ctx.strokeRect(-5.2, -1.5, 10.4, 3);
+    ctx.strokeStyle = '#3a2a20';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.quadraticCurveTo(2, -9, 4.5, -9.5);
+    ctx.stroke();
+    if (lit) {
+      const f = 1.6 + Math.sin(time * 40) * 0.6;
+      ctx.fillStyle = '#ffe14d';
+      ctx.beginPath();
+      ctx.arc(4.8, -9.6, f, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ff7b1f';
+      ctx.beginPath();
+      ctx.arc(4.8, -9.6, f * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  },
   can(ctx: CanvasRenderingContext2D) {
     // A bulging tin of surströmming.
     ctx.strokeStyle = INK;
@@ -1205,6 +1274,10 @@ export function drawProjectile(ctx: CanvasRenderingContext2D, kind: ProjKind, x:
     case 'can':
       ctx.rotate(time * 6);
       ART.can(ctx);
+      break;
+    case 'dynamite':
+      ctx.translate(0, -1);
+      ART.dynamite(ctx, time);
       break;
     case 'rocket':
     case 'missile': {
@@ -1479,6 +1552,11 @@ export class Particles {
       if (kind === 'medic') this.add({ x: px, y: py, vx: 0, vy: -rnd(20, 40), max: rnd(1, 1.6), size: rnd(4, 6), color: '#ff4d6d', kind: 'plus', delay: rnd(0, 0.5) });
       else this.add({ x: px, y: py, vx: 0, vy: -rnd(15, 30), max: rnd(1.2, 1.8), size: rnd(6, 9), color: '#5d7a24', kind: 'stinkline', delay: rnd(0, 0.6) });
     }
+  }
+
+  /** Sparks spitting off a lit fuse. */
+  fuseSpark(x: number, y: number) {
+    this.add({ x, y, vx: rnd(-40, 40), vy: -rnd(30, 80), max: rnd(0.2, 0.4), size: rnd(1.2, 2.2), color: Math.random() > 0.5 ? '#ffe14d' : '#ff9a3d', kind: 'spark', gravity: 150 });
   }
 
   /** The arc of a bat swing. */
@@ -1928,6 +2006,17 @@ export function weaponIcon(id: WeaponId) {
       ctx.rotate(-0.75);
       ctx.scale(2.2, 2.2);
       ART.syringe(ctx);
+      break;
+    case 'dynamite':
+      ctx.rotate(0.25);
+      ctx.scale(2.6, 2.6);
+      ctx.translate(-0.5, 2);
+      ART.dynamite(ctx, 0.3);
+      break;
+    case 'mine':
+      ctx.scale(3.6, 3.6);
+      ctx.translate(0, -2);
+      drawMine(ctx, 0, 0, 0, true);
       break;
     case 'sheep':
       ctx.scale(2.5, 2.5);
