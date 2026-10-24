@@ -1,8 +1,8 @@
-import { crateTouching, fire, FPS, grounded, openCrate, Sim, walk, WORM_R, type SimInput } from '../../shared/artillery/sim.ts';
+import { crateTouching, fire, FPS, grounded, killCamExtraMs, openCrate, Sim, walk, WORM_R, type SimInput } from '../../shared/artillery/sim.ts';
 import { MAT, Terrain, W, WATER_Y } from '../../shared/artillery/terrain.ts';
 import { politicianNames } from '../../shared/artillery/politicians.ts';
 import {
-  CRATE_WEAPONS, RETREAT_SECONDS, TEAM_COLORS, WEAPONS, WEAPON_BY_ID,
+  CRATE_WEAPONS, emptyStats, RETREAT_SECONDS, TEAM_COLORS, WEAPONS, WEAPON_BY_ID,
   type ArtEvent, type ArtState, type Crate, type Timeline, type WeaponId, type Worm,
 } from '../../shared/artillery/types.ts';
 import { QUIET, type GameContext, type GameModule } from './module.ts';
@@ -80,6 +80,7 @@ function startMatch(s: ArtState, ctx: GameContext) {
   s.winner = null;
   s.solo = s.teams.length === 1;
   s.sdTurn = s.solo || !s.suddenDeath ? 0 : s.suddenDeath * s.teams.length;
+  s.stats = emptyStats(s.teams.length);
   s.teams.forEach((t) => {
     t.ammo = fullAmmo();
     t.lastWorm = -1;
@@ -221,12 +222,39 @@ function afterAnimation(s: ArtState, ctx: GameContext, endsAt: number, then: () 
   });
 }
 
-const animMs = (tl: Timeline) => (tl.frames / FPS) * 1000 + PAUSE_MS;
+// Includes the kill cam's slow motion, which clients play at the same pace.
+const animMs = (tl: Timeline) => (tl.frames / FPS) * 1000 + killCamExtraMs(tl) + PAUSE_MS;
+
+/**
+ * Tally a finished timeline for the end screen. `by` is the worm whose shot or
+ * move it was (null for the flood); `weapon` is set for shots.
+ */
+function recordStats(s: ArtState, tl: Timeline, by: number | null, weapon?: WeaponId) {
+  const st = s.stats;
+  const shooter = by === null ? null : s.worms.find((w) => w.id === by);
+  const team = (id: number) => s.worms.find((w) => w.id === id)?.team ?? -1;
+  let damage = 0;
+  let kills = 0;
+  for (const e of tl.events) {
+    if (e.type === 'damage' && shooter && team(e.wormId!) !== shooter.team) damage += e.amount ?? 0;
+    if (e.type === 'die') {
+      const how = by === null ? 'flood' : e.kind === 'drown' ? 'drown' : weapon ? 'blast' : 'fall';
+      st.deaths.push({ wormId: e.wormId!, by, how, weapon });
+      if (shooter && team(e.wormId!) !== shooter.team) kills++;
+    }
+  }
+  if (!shooter) return;
+  st.damage[shooter.team] += damage;
+  st.kills[shooter.team] += kills;
+  st.wormDamage[shooter.id] = (st.wormDamage[shooter.id] ?? 0) + damage;
+  if (weapon && damage > 0 && (!st.best || damage > st.best.damage)) st.best = { wormId: shooter.id, weapon, damage, kills };
+}
 
 /** A jump, or a fall after walking off an edge, in the middle of a turn. */
 function runMoveSim(s: ArtState, ctx: GameContext, sim: Sim) {
   const tl = sim.run();
   applyPickups(s, tl.events);
+  recordStats(s, tl, s.turn?.wormId ?? null);
   ctx.emit({ type: 'timeline', tl } satisfies ArtEvent);
   const ms = animMs(tl);
   if (currentWorm(s)?.alive && s.turn) {
@@ -262,6 +290,7 @@ function publishShot(s: ArtState, ctx: GameContext, tl: Timeline, replace: boole
   ctx.emit({ type: 'timeline', tl, replace, retreat: { wormId: sh.wormId, until: sh.until } } satisfies ArtEvent);
   afterAnimation(s, ctx, sh.start + animMs(tl), () => {
     applyPickups(s, tl.events);
+    recordStats(s, tl, sh.wormId, sh.weapon);
     P(s).shot = null;
     betweenTurns(s, ctx);
   });
@@ -309,6 +338,7 @@ function betweenTurns(s: ArtState, ctx: GameContext) {
   const tl = sim.run();
   s.water = Math.round(sim.water);
   applyPickups(s, tl.events);
+  recordStats(s, tl, null);
   ctx.emit({ type: 'timeline', tl } satisfies ArtEvent);
   s.phase = 'resolving';
   afterAnimation(s, ctx, Date.now() + animMs(tl), () => nextTurn(s, ctx));
@@ -335,6 +365,7 @@ export const artillery: GameModule<ArtState> = {
       cratesOn: true,
       suddenDeath: 8,
       sdTurn: 0,
+      stats: emptyStats(0),
     };
     priv.set(s, { terrain: null, lastWalk: 0, busyUntil: 0, shot: null, gen: 0, crateSeq: 0 });
     return s;

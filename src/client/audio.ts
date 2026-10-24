@@ -11,7 +11,7 @@ export type Sound =
   | 'explosion' | 'bigExplosion' | 'smallExplosion' | 'launch' | 'throw' | 'bounce' | 'splash' | 'shotgun'
   | 'plane' | 'whistle' | 'teleport' | 'jump' | 'land' | 'hurt' | 'die' | 'holy' | 'fuse' | 'step'
   | 'boing' | 'bonk' | 'pop' | 'slide' | 'bubbles' | 'ricochet' | 'chirp' | 'whoosh' | 'hup' | 'sadTrombone'
-  | 'pickup' | 'heal' | 'crateLand' | 'parachute' | 'flood' | 'alarm' | 'retreat'
+  | 'pickup' | 'heal' | 'crateLand' | 'parachute' | 'flood' | 'alarm' | 'retreat' | 'slowmo'
   | 'click' | 'select' | 'yourTurn' | 'turn' | 'tick' | 'win' | 'lose' | 'place';
 
 type Opts = { pan?: number; gain?: number; pitch?: number };
@@ -477,6 +477,13 @@ const RECIPES: Record<Sound, Recipe> = {
     return 2;
   },
 
+  slowmo: (a, out, t) => {
+    // Time slows: a deep falling whoosh and two heartbeats.
+    a.burst(out, t, { type: 'lowpass', from: 1800, to: 120, attack: 0.05, peak: 0.3, decay: 0.9 });
+    a.tone(out, t, { from: 300, to: 60, peak: 0.2, decay: 0.8 });
+    for (const d of [0.25, 0.47]) a.tone(out, t + d, { from: 70, to: 40, peak: 0.45, decay: 0.14 });
+    return 1;
+  },
   pickup: notes([784, 988, 1175, 1568], 0.06, 'square', 0.08, 0.16),
   heal: (a, out, t) => {
     notes([523.3, 659.3, 784, 1046.5], 0.07, 'sine', 0.2, 0.35)(a, out, t, 1);

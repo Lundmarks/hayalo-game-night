@@ -85,6 +85,46 @@ export function walk(t: Terrain, w: Worm, dir: 1 | -1, px: number) {
   return { moved, fell: false };
 }
 
+// ---- kill cam ----
+// The moment a worm is finished off plays in slow motion. Server and clients use
+// the same function, so the server waits exactly as long as the clients play.
+
+export const SLOWMO = 0.3;
+
+/** Frames around the first fatal hit (or drowning) in a timeline, and where it is. */
+export function killCam(tl: Timeline) {
+  let key = Infinity;
+  let x = 0;
+  let y = 0;
+  for (const d of tl.events) {
+    if (d.type !== 'die') continue;
+    let f = d.f;
+    let px = d.x;
+    let py = d.y;
+    // The moment that counts is the last hit: worms out of HP only die at the
+    // end of the timeline, and a drowning usually starts with a blast.
+    for (const e of tl.events) if (e.type === 'damage' && e.wormId === d.wormId && e.f <= d.f) [f, px, py] = [e.f, e.x, e.y];
+    if (f < key) [key, x, y] = [f, px, py];
+  }
+  return key === Infinity ? null : { start: Math.max(0, key - 15), end: key + 30, x, y };
+}
+
+/** Extra wall-clock time the slow motion adds to a timeline. */
+export function killCamExtraMs(tl: Timeline) {
+  const k = killCam(tl);
+  return k ? ((k.end - k.start) / FPS) * 1000 * (1 / SLOWMO - 1) : 0;
+}
+
+/** Which frame to show `secs` seconds into playback (slower through the kill cam). */
+export function frameAt(k: ReturnType<typeof killCam>, secs: number) {
+  const f = secs * FPS;
+  if (!k || f <= k.start) return f;
+  const t0 = k.start / FPS;
+  const slow = (k.end - k.start) / FPS / SLOWMO;
+  if (secs < t0 + slow) return k.start + (secs - t0) * FPS * SLOWMO;
+  return k.end + (secs - t0 - slow) * FPS;
+}
+
 /** The crate a worm at its current spot is touching, if any. */
 export function crateTouching(crates: Crate[], w: Worm) {
   return crates.find((c) => Math.abs(w.x - c.x) < WORM_R + CRATE_R && Math.abs(w.y - c.y) < WORM_R + CRATE_R);
@@ -282,7 +322,11 @@ export class Sim {
     const k = Math.min(1, (this.frame - fl.start) / FLOOD_FRAMES);
     this.water = fl.from + (fl.to - fl.from) * k;
     for (const w of this.worms) {
-      if (!w.alive || this.movers.has(w.id) || w.y < this.water) continue;
+      if (this.movers.has(w.id) || w.y < this.water) continue;
+      if (!w.alive) {
+        w.y = this.water + 20; // a grave the sea has covered
+        continue;
+      }
       w.alive = false;
       w.hp = 0;
       this.event({ type: 'splash', x: w.x, y: this.water });
@@ -467,6 +511,12 @@ export class Sim {
     w.x = Math.round(w.x);
     w.y = Math.round(w.y);
     while (footSolid(this.t, w.x, w.y)) w.y--;
+    if (!w.alive) {
+      // A grave settling: no damage, no fuss.
+      this.endTrack(m.track, w.x, w.y);
+      this.movers.delete(w.id);
+      return;
+    }
     if (m.vy > FALL_SAFE) {
       const amount = Math.min(30, Math.round((m.vy - FALL_SAFE) / 12));
       if (amount > 0) {
@@ -488,12 +538,16 @@ export class Sim {
       let ny = w.y + (m.vy * DT) / steps;
 
       if (ny > this.water) {
+        const wasAlive = w.alive;
         w.alive = false;
         w.hp = 0;
-        this.endTrack(m.track, nx, this.water);
+        this.endTrack(m.track, nx, this.water + 20);
         this.movers.delete(w.id);
+        // Below the surface, so no grave is drawn for it.
+        w.x = nx;
+        w.y = this.water + 20;
         this.event({ type: 'splash', x: nx, y: this.water });
-        this.event({ type: 'die', x: nx, y: this.water, wormId: w.id, kind: 'drown' });
+        if (wasAlive) this.event({ type: 'die', x: nx, y: this.water, wormId: w.id, kind: 'drown' });
         return;
       }
       if (m.vx !== 0 && this.t.solid(nx + Math.sign(m.vx) * WORM_R, ny)) {
@@ -516,7 +570,8 @@ export class Sim {
 
   private settle() {
     for (const w of this.worms) {
-      if (w.alive && !this.movers.has(w.id) && !grounded(this.t, w)) this.knock(w, 0, 0);
+      // Living worms and graves (dead worms still above water) fall when nothing holds them up.
+      if ((w.alive || w.y < this.water) && !this.movers.has(w.id) && !grounded(this.t, w)) this.knock(w, 0, 0);
     }
   }
 

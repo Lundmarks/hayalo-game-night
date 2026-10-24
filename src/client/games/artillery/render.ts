@@ -1,7 +1,7 @@
 import { WORM_R } from '../../../shared/artillery/sim.ts';
 import { H, MAT, Terrain, W, WATER_Y, type ThemeId } from '../../../shared/artillery/terrain.ts';
 import { partyOf } from '../../../shared/artillery/politicians.ts';
-import type { ProjKind } from '../../../shared/artillery/types.ts';
+import type { ProjKind, WeaponId } from '../../../shared/artillery/types.ts';
 
 const hash = (x: number, y: number) => {
   let h = (x * 374761393 + y * 668265263) | 0;
@@ -1413,4 +1413,135 @@ export class Particles {
       }
     }
   }
+}
+
+
+// ---- weapon icons ----
+// Drawn rather than emoji, so the buttons look the same on every system.
+
+const iconCache = new Map<WeaponId, string>();
+
+/** A 64x64 PNG data URL for a weapon button. */
+export function weaponIcon(id: WeaponId) {
+  const hit = iconCache.get(id);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const ctx = c.getContext('2d')!;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.translate(32, 32);
+  ctx.strokeStyle = INK;
+  const outlined = (fill: string, width: number, path: () => void) => {
+    ctx.beginPath();
+    path();
+    ctx.fillStyle = fill;
+    ctx.lineWidth = width;
+    ctx.fill();
+    ctx.stroke();
+  };
+  switch (id) {
+    case 'bazooka':
+      ctx.rotate(-0.5);
+      outlined('#6f8f3a', 3, () => ctx.roundRect(-22, -6, 36, 12, 4));
+      outlined('#4f6a26', 2.5, () => ctx.rect(-6, 6, 7, 9));
+      outlined('#e04848', 3, () => {
+        ctx.moveTo(14, -7);
+        ctx.quadraticCurveTo(27, 0, 14, 7);
+        ctx.closePath();
+      });
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillRect(-19, -4, 28, 3);
+      break;
+    case 'grenade':
+      outlined('#4f8f34', 3, () => ctx.arc(0, 5, 17, 0, Math.PI * 2));
+      outlined('#c8c8d0', 2.5, () => ctx.rect(-5, -17, 10, 8));
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(10, -16, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.moveTo(-17, 5);
+      ctx.lineTo(17, 5);
+      ctx.moveTo(0, -12);
+      ctx.lineTo(0, 22);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.beginPath();
+      ctx.arc(-7, -2, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'shotgun':
+      ctx.rotate(-0.35);
+      outlined('#9a6a3a', 3, () => {
+        ctx.moveTo(-26, 2);
+        ctx.lineTo(-8, -2);
+        ctx.lineTo(-6, 8);
+        ctx.lineTo(-24, 14);
+        ctx.closePath();
+      });
+      outlined('#8a8fa0', 3, () => ctx.roundRect(-8, -7, 34, 9, 2));
+      outlined('#5a5f70', 2, () => ctx.rect(-8, 2, 20, 5));
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.fillRect(-6, -5, 30, 2);
+      break;
+    case 'cluster':
+      for (const [x, y] of [[-17, -14], [18, -12], [-19, 15], [19, 16]]) outlined('#ff8a3d', 2, () => ctx.arc(x, y, 5, 0, Math.PI * 2));
+      outlined('#d84a4a', 3, () => ctx.arc(0, 1, 15, 0, Math.PI * 2));
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.beginPath();
+      ctx.arc(-5, -4, 4, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'airstrike':
+      ctx.scale(0.78, 0.78);
+      drawPlane(ctx, 0, -6, 1, 0.3);
+      ctx.fillStyle = '#9aa4b8';
+      for (const x of [-10, 8]) outlined('#9aa4b8', 2.5, () => ctx.ellipse(x, 22, 4, 8, 0, 0, Math.PI * 2));
+      break;
+    case 'haybomb':
+      ctx.fillStyle = 'rgba(255, 240, 160, 0.6)';
+      ctx.beginPath();
+      ctx.arc(0, 4, 26, 0, Math.PI * 2);
+      ctx.fill();
+      outlined('#ecc44e', 3, () => ctx.arc(0, 4, 17, 0, Math.PI * 2));
+      ctx.strokeStyle = '#9a7a1a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (const y of [-4, 4, 12]) {
+        ctx.moveTo(-14, y);
+        ctx.lineTo(14, y);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = '#fff07a';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.ellipse(0, -20, 13, 4, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    case 'teleport': {
+      // A sparkly star with a swirl.
+      ctx.strokeStyle = '#7fe3ff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, 22, 0.3, Math.PI * 1.6);
+      ctx.stroke();
+      ctx.strokeStyle = INK;
+      outlined('#fff59a', 3, () => {
+        for (let i = 0; i < 10; i++) {
+          const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+          const r = i % 2 ? 7 : 17;
+          ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        ctx.closePath();
+      });
+      for (const [x, y, r] of [[19, -16, 4], [-20, 15, 3]]) outlined('#c9f3ff', 1.5, () => ctx.arc(x, y, r, 0, Math.PI * 2));
+      break;
+    }
+  }
+  const url = c.toDataURL();
+  iconCache.set(id, url);
+  return url;
 }

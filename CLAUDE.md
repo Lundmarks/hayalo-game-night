@@ -70,6 +70,10 @@ Working:
   4/8/12 rounds or off), parachute crates (`s.crates`, health or limited weapon,
   explode/sink/fall), team health panel, on-screen keybinds, speech-bubble quips,
   Swedish politicians with party tags. Between-turn events run in `betweenTurns()`.
+- Artillery polish (2026-10-24): kill-cam slow motion (shared `killCam`/`frameAt`,
+  server waits `killCamExtraMs`), turn intro card + zoom, faint trail of your last
+  shot, graves that fall and show names, drawn weapon icons, end screen with
+  awards from `s.stats` (`recordStats()` on the server).
 - Hay, Where? (geoguess): Wikimedia Commons photos, Leaflet + OSM map, rounds
   3/5/10, 30/60/90s, 15s rush after the first lock-in, speed bonus, reveal map
   with all pins, auto-advance, host skip/next/end, click-to-zoom photo, phone layout

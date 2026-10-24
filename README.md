@@ -66,6 +66,13 @@ the next person becomes host.
 - Between turns, crates may parachute in (health +25, or an extra limited weapon),
   and after the sudden-death round count the water rises each turn. Both are lobby
   settings. A corner panel shows each team's health, worms left and who is away.
+- Kill cam: the moment a worm is finished off plays in slow motion with a zoom.
+  `killCam()` in `sim.ts` decides the window; the server adds the extra time to
+  its wait so clients and server stay in step.
+- The end screen shows MVP, best shot, funniest exit and a damage/KO table, from
+  `state.stats` which the server tallies after each timeline.
+- Weapon and award icons are drawn in code (no emoji), so they look the same
+  everywhere.
 - Controls: drag on the map to aim (distance = power), Space/FIRE to shoot,
   ←/→ or the buttons to walk, J to jump, W/S angle, Q/E power, 1–7 weapons.
   The same list is on screen (H toggles it).

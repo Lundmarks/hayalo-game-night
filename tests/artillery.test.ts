@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { H, mapInfo, SHAPES, Terrain, W, WATER_Y } from '../src/shared/artillery/terrain.ts';
-import { Sim, walk, WORM_R } from '../src/shared/artillery/sim.ts';
+import { frameAt, killCam, killCamExtraMs, Sim, walk, WORM_R } from '../src/shared/artillery/sim.ts';
 import type { ArtState, Worm } from '../src/shared/artillery/types.ts';
 import { artillery } from '../src/server/games/artillery.ts';
 import { ADMIRED, INFAMOUS, politicianNames, SWEDISH } from '../src/shared/artillery/politicians.ts';
@@ -336,4 +336,72 @@ test('crate drops happen between turns when crates are on', () => {
   for (let i = 0; i < 30; i++) r.advance(r.s.turnSeconds * 1000 + 1);
   r.advance(20_000);
   assert.ok(timelines(r).some((e) => e.tl.events.some((x) => x.type === 'crate' && x.kind === 'drop')));
+});
+
+// ---- kill cam, graves, stats ----
+
+test('the kill cam slows playback, and the server waits for it', () => {
+  const t = flatTerrain();
+  const victim = worm(1, 500, 400 - WORM_R - 1);
+  victim.hp = 10;
+  const sim = new Sim(t, [worm(0, 200, 400 - WORM_R - 1), victim], [], 0);
+  sim.launch('rocket', 470, 380, 300, 0, 0);
+  const tl = sim.run();
+  const k = killCam(tl)!;
+  assert.ok(k, 'a kill should get a kill cam');
+  assert.ok(Math.abs(k.x - 500) < 40);
+  // Playback reaches the last frame exactly when the extra time says it will.
+  const secs = tl.frames / 60 + killCamExtraMs(tl) / 1000;
+  assert.ok(Math.abs(frameAt(k, secs) - tl.frames) < 0.01);
+  // Monotonic, and slower inside the window.
+  let prev = -1;
+  for (let x = 0; x < secs; x += 0.05) {
+    const f = frameAt(k, x);
+    assert.ok(f >= prev);
+    prev = f;
+  }
+  assert.ok(frameAt(k, (k.start + 1) / 60 + 0.1) - k.start < 6);
+  // No deaths, no kill cam.
+  assert.equal(killCam(new Sim(flatTerrain(), [worm(0, 200, 390)], [], 0).run()), null);
+});
+
+test('graves fall when the ground under them is blown away', () => {
+  const t = flatTerrain();
+  const dead = worm(1, 600, 400 - WORM_R - 1);
+  dead.alive = false;
+  dead.hp = 0;
+  const sim = new Sim(t, [dead], [], 0);
+  sim.explode(600, 410, 40, 10, 'test');
+  const tl = sim.run();
+  assert.ok(dead.y > 420, `grave stayed at y=${dead.y}`);
+  assert.ok(tl.tracks.some((tr) => tr.kind === 'worm' && tr.wormId === 1));
+  assert.ok(!tl.events.some((e) => e.type === 'damage' || e.type === 'die'), 'a grave takes no damage and does not die again');
+});
+
+test('a worm that drowns ends up under the water (no grave on the surface)', () => {
+  const t = new Terrain();
+  const w = worm(0, 600, 300);
+  const sim = new Sim(t, [w], [], 0);
+  sim.run();
+  assert.equal(w.alive, false);
+  assert.ok(w.y > WATER_Y);
+});
+
+test('match stats count damage, knockouts, the best shot and how worms went out', () => {
+  const r = startMatch(['a', 'b'], 1);
+  const me = r.s.worms.find((w) => w.id === r.s.turn!.wormId)!;
+  const enemy = r.s.worms.find((w) => w.team !== me.team)!;
+  // Teleport the enemy next to us with low HP, then shoot point blank.
+  enemy.x = me.x + 40;
+  enemy.y = me.y;
+  enemy.hp = 5;
+  const pid = r.s.teams[me.team].playerId;
+  r.act(pid, { a: 'fire', weapon: 'bazooka', angle: 0, power: 1 });
+  r.act(pid, { a: 'fire', weapon: 'bazooka', angle: Math.atan2(enemy.y - me.y, enemy.x - me.x), power: 1 });
+  r.advance(30_000);
+  const st = r.s.stats;
+  assert.ok(st.damage[me.team] > 0, 'damage to the other team counts');
+  assert.ok(st.best && st.best.wormId === me.id && st.best.weapon === 'bazooka');
+  assert.ok(st.deaths.length >= 1);
+  assert.ok(st.deaths.every((d) => ['blast', 'drown', 'flood', 'fall'].includes(d.how)));
 });

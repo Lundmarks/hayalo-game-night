@@ -196,6 +196,7 @@ body.offline::after {
 }
 .wpn.sel { border-color: var(--accent); background: var(--card-hover); }
 .wpn:disabled { opacity: 0.3; cursor: default; }
+.wpn img { width: 30px; height: 30px; pointer-events: none; user-select: none; }
 .wpn i { position: absolute; right: 2px; bottom: 0; font-size: 10px; font-style: normal; font-weight: 700; color: var(--accent); }
 .controls { display: flex; gap: 6px; align-items: center; }
 .ctl {
@@ -234,8 +235,27 @@ body.offline::after {
 .hpbar b { display: block; height: 100%; border-radius: 4px; transition: width 0.4s ease; }
 .tinfo { min-width: 1.6em; text-align: right; font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.8); }
 
+/* End of match */
+.panel.end { width: min(440px, 100%); }
+.end-title { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.awards { display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.award { display: flex; align-items: center; gap: 10px; background: rgba(0, 0, 0, 0.25); border-radius: 10px; padding: 7px 10px; }
+.award .aicon { width: 34px; height: 34px; flex: none; display: grid; place-items: center; font-size: 22px; }
+.award .aicon img { width: 34px; height: 34px; }
+.award div { display: flex; flex-direction: column; min-width: 0; }
+.award small { color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; }
+.award b { font-size: 14px; }
+.award span { font-size: 11px; color: var(--muted); }
+.art-scores { width: 100%; border-collapse: collapse; font-size: 12px; }
+.art-scores th { color: var(--muted); font-weight: 600; text-align: right; padding: 2px 6px; }
+.art-scores td { text-align: right; padding: 4px 6px; border-top: 1px solid rgba(255, 255, 255, 0.08); font-variant-numeric: tabular-nums; }
+.art-scores th:first-child, .art-scores td:first-child { text-align: left; }
+.art-scores .who { display: inline-flex; align-items: center; gap: 6px; }
+.art-scores tr.win td { color: var(--accent); font-weight: 700; }
+.art-scores tr.me td:first-child { font-weight: 800; }
+
 /* Keyboard help, bottom-right of the map */
-.art-keys { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.art-keys { position: absolute; right: 8px; bottom: 8px; z-index: 2; transition: opacity 0.2s; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .art-keys[hidden] { display: none; }
 .keys-toggle {
   border: 1px solid rgba(255, 255, 255, 0.25); background: rgba(26, 19, 37, 0.8); color: #fff;

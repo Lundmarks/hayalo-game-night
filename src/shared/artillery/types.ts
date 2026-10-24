@@ -49,6 +49,25 @@ export const MAX_HP = 150;
 /** Seconds you can keep moving after firing. */
 export const RETREAT_SECONDS = 3;
 
+export type DeathHow = 'blast' | 'drown' | 'flood' | 'fall';
+
+/** Running tally for the end-of-match screen. */
+export type MatchStats = {
+  damage: number[]; // per team, dealt to other teams
+  kills: number[]; // per team, other teams' worms finished off
+  wormDamage: Record<number, number>; // per worm id, dealt to other teams
+  best: { wormId: number; weapon: WeaponId; damage: number; kills: number } | null;
+  deaths: { wormId: number; by: number | null; how: DeathHow; weapon?: WeaponId }[];
+};
+
+export const emptyStats = (teams: number): MatchStats => ({
+  damage: Array(teams).fill(0),
+  kills: Array(teams).fill(0),
+  wormDamage: {},
+  best: null,
+  deaths: [],
+});
+
 export type Team = {
   playerId: string;
   name: string;
@@ -88,6 +107,7 @@ export type ArtState = {
   suddenDeath: number;
   /** Turn number after which the water starts rising (0 = never), fixed at match start. */
   sdTurn: number;
+  stats: MatchStats;
 };
 
 export type ProjKind = 'rocket' | 'grenade' | 'cluster' | 'bomblet' | 'missile' | 'haybomb';
