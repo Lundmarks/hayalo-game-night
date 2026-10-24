@@ -94,9 +94,12 @@ Discord --https--> <name>.duckdns.org --router 443->8443--> Caddy --> game conta
    behave-bot: `restart: unless-stopped`, `env_file: .env`). `.env` must exist
    before the image is built: the client ID is baked into the client bundle.
    Expose 3001 only on localhost.
-2. **Address:** a second DuckDNS name (e.g. `hayalo-gn.duckdns.org`). Add it to
-   the `domains=` list in `~/duckdns/duck.sh` (comma-separated); the existing cron
-   job (every 5 min) keeps it updated. Never print the token in that file.
+2. **Address:** a DuckDNS name (e.g. `hayalo-gn.duckdns.org`). Put it in the
+   `domains=` list in `~/duckdns/duck.sh` (comma-separated; the old Minecraft name
+   `nkma-mons` is there). The update cron job was removed on 2026-10-25 when
+   Minecraft was retired, so re-add it with the user's OK:
+   `*/5 * * * * /home/lundmark/duckdns/duck.sh >/dev/null 2>&1`.
+   Never print the token in that file.
 3. **HTTPS:** Caddy. **Pi-hole already uses ports 80 and 443 on this machine**, so
    Caddy listens on 8080/8443 (`http_port 8080`, `https_port 8443` in the global
    options) with `<name>.duckdns.org { reverse_proxy localhost:3001 }`. Don't
