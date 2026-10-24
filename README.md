@@ -30,20 +30,43 @@ Games:
 ## Testing without Discord
 
 `npm run dev`, then open http://localhost:5173 in two tabs. Each tab is a
-separate guest. Add `?room=name` to use a separate room.
+separate guest. Add `?room=name` to use a separate room. Artillery also has a
+solo practice mode, so one tab is enough to try weapons.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Server on :3001 and client on :5173, mock guests in the browser |
+| `npm run dev:discord` | Same, set up for the Discord tunnel |
+| `npm run tunnel` | Cloudflare quick tunnel to :5173 |
+| `npm run check` | Typecheck (`tsc --noEmit`) |
+| `npm test` | Tests (`tests/*.test.ts`, Node's built-in runner via `tsx`) |
+| `npm run build && npm start` | Production build, served from one port |
+
+The tests drive the server game modules with a fake room (`tests/fake-room.ts`)
+and a hand-cranked clock, so turn timers and forfeits run instantly.
 
 ## How it fits together
 
 ```
-src/shared/   protocol + game list + game state types (used by both sides)
-src/server/   Express (OAuth token exchange) + WebSocket rooms, one per Activity instance
-  games/      server-side rules; the server is the source of truth
-src/client/   Discord SDK login, launcher, game screens
-  games/      one render function per game
+src/shared/          protocol, game list, game state types (used by both sides)
+  artillery/         terrain generator, physics sim, types, politician names
+  geo.ts             Hay, Where? types
+src/server/          Express (OAuth token exchange, photo/tile proxy) + WebSocket rooms
+  rooms.ts           one room per Activity instance; host handover, reconnects
+  games/             server-side rules (GameModule); the server is the source of truth
+  geo/photos.ts      Wikimedia Commons photo search
+src/client/          Discord SDK login, launcher, game screens
+  main.ts            picks the view for the current game (VIEWS)
+  audio.ts           every sound, synthesized
+  games/             one view per game (artillery has view.ts + render.ts)
+tests/               node:test suites + the fake room
 ```
 
 The first person in a room is the host and picks the game. When the host leaves,
-the next person becomes host.
+the next person becomes host. Clients only send intents ("fire at this angle");
+the server checks them, updates the state and broadcasts it.
 
 ## Hayalo Artillery
 
@@ -103,8 +126,12 @@ client.
 ## Adding a game
 
 1. Add an entry to `GAMES` in `src/shared/games.ts` (plus its state/action types).
-2. Write a `GameModule` in `src/server/games/` and register it in `games/index.ts`.
-3. Write a render function in `src/client/games/` and hook it up in `src/client/main.ts`.
+   `available: false` shows it as a "Coming soon" card.
+2. Write a `GameModule` in `src/server/games/` (import the types and `QUIET` from
+   `module.ts`) and register it in `GAME_MODULES` in `games/index.ts`.
+3. Write a `GameView` (`update`, `event`, `destroy`) in `src/client/games/` and add
+   it to `VIEWS` in `src/client/main.ts`. Buttons use `data-act` with a JSON action.
+4. Add a test in `tests/` using the fake room.
 
 ## Production
 

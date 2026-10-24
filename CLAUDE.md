@@ -43,6 +43,28 @@ README.md covers setup, Discord portal config, and architecture. Read it first.
   registered in `VIEWS` in `src/client/main.ts`. Clicks use `data-act` (JSON game
   action) or `data-cmd`.
 
+## Artillery file map
+
+- `src/shared/artillery/terrain.ts`: seeded map generator (themes, shapes,
+  materials, caves), `rng`, crater carving.
+- `src/shared/artillery/sim.ts`: physics, weapons, crates, flood, retreat inputs,
+  kill-cam timing (`killCam`, `frameAt`, `SLOWMO`). Builds the `Timeline`.
+- `src/shared/artillery/types.ts`: `ArtState`, timeline/event types, `MatchStats`.
+- `src/server/games/artillery.ts`: lobby, turn flow (`simulateShot` →
+  `publishShot` → `afterAnimation` → `betweenTurns` → `nextTurn`), retreat
+  re-simulation, spawns, stats.
+- `src/client/games/artillery/view.ts`: timeline playback, camera/zoom, input,
+  panels, end screen. `render.ts`: all canvas drawing and `weaponIcon()`.
+- Server waits `frames/FPS + killCamExtraMs + PAUSE_MS` before the next turn;
+  change the kill cam in `sim.ts` so both sides keep agreeing.
+
+## Checking visuals
+
+There's no browser test harness in the repo. Headless Chromium from Playwright's
+cache, driven over CDP with the `ws` package, works for screenshots (keep runs
+sequential: they share a debug port). Emoji don't render there, which is why
+icons are drawn in code.
+
 ## Current status (2026-10-24)
 
 Working:
@@ -61,7 +83,8 @@ Working:
   `Terrain.caves` for the back wall), cartoon renderer (inked outlines, worm faces
   and politician hats, comic BOOM text, plane for air strikes, birds/snow), more
   synthesized sounds (voice "ow", boing, bonk, slide whistle, sad trombone).
-  Worm names are politicians (`HEROES`/`VILLAINS` in the server module).
+  Worm names are politicians (`ADMIRED`/`INFAMOUS`/`SWEDISH` in
+  `src/shared/artillery/politicians.ts`).
   Fixed: fused bombs passed through worms; bombs stuck instead of rolling; a hidden
   170px walk budget plus a too-strict slope check made walking stop.
 - Artillery round 2 (2026-10-24): 3s retreat after firing (server keeps the shot's
