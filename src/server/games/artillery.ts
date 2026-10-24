@@ -1,34 +1,47 @@
-import { fire, grounded, Sim, walk, WORM_R, FPS } from '../../shared/artillery/sim.ts';
+import { crateTouching, fire, FPS, grounded, openCrate, Sim, walk, WORM_R, type SimInput } from '../../shared/artillery/sim.ts';
 import { MAT, Terrain, W, WATER_Y } from '../../shared/artillery/terrain.ts';
-import { TEAM_COLORS, WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Timeline, type WeaponId } from '../../shared/artillery/types.ts';
+import { politicianNames } from '../../shared/artillery/politicians.ts';
+import {
+  CRATE_WEAPONS, RETREAT_SECONDS, TEAM_COLORS, WEAPONS, WEAPON_BY_ID,
+  type ArtEvent, type ArtState, type Crate, type Timeline, type WeaponId, type Worm,
+} from '../../shared/artillery/types.ts';
 import { QUIET, type GameContext, type GameModule } from './module.ts';
 
 const MAX_TEAMS = 6;
 // How long a player can be disconnected mid-match before their team forfeits.
 const GRACE_MS = 60_000;
+const RETREAT_FRAMES = RETREAT_SECONDS * FPS;
+const CRATE_CHANCE = 0.4; // chance of a crate drop between turns
+const MAX_CRATES = 5;
+const FLOOD_STEP = 22; // px the water rises each turn in sudden death
+const MIN_WATER = 120; // the water never rises above this
+const PAUSE_MS = 600; // breather after an animation before the next thing starts
 
-// Worms are named after politicians: the admired and the infamous, mixed
-// together so every team gets a bit of both.
-export const HEROES = [
-  'Lincoln', 'Churchill', 'Mandela', 'Gandhi', 'JFK', 'FDR', 'Obama', 'Merkel', 'Washington', 'Palme', 'Thatcher',
-  'Reagan', 'de Gaulle', 'Zelensky', 'Ardern', 'Teddy', 'Bismarck', 'Kekkonen', 'Havel', 'Lula', 'Macron', 'Trudeau',
-];
-export const VILLAINS = [
-  'Stalin', 'Mussolini', 'Pol Pot', 'Idi Amin', 'Kim Jong-un', 'Putin', 'Mao', 'Caligula', 'Nero', 'Gaddafi',
-  'Saddam', 'Ceaușescu', 'Franco', 'Pinochet', 'Mugabe', 'Lukashenko', 'Nixon', 'Robespierre', 'Napoleon', 'Assad',
-];
-
-/** Alternate heroes and villains so each team gets some of both. */
-export function politicianNames(n: number) {
-  const h = shuffle([...HEROES]);
-  const v = shuffle([...VILLAINS]);
-  const out: string[] = [];
-  for (let i = 0; out.length < n; i++) out.push(i % 2 ? v[(i >> 1) % v.length] : h[(i >> 1) % h.length]);
-  return out;
-}
+/** A fired shot, kept so it can be re-simulated with the shooter's retreat moves. */
+type Shot = {
+  playerId: string;
+  wormId: number;
+  start: number; // server ms when the shot was fired
+  until: number; // retreat moves are accepted until this time
+  seed: number;
+  weapon: WeaponId;
+  angle: number;
+  power: number;
+  tx?: number;
+  ty?: number;
+  inputs: SimInput[];
+  snap: { mask: Uint8Array; worms: Worm[]; craters: number; crates: Crate[] };
+};
 
 // Things the server needs but clients don't (kept out of the broadcast state).
-type Private = { terrain: Terrain | null; lastWalk: number; busyUntil: number };
+type Private = {
+  terrain: Terrain | null;
+  lastWalk: number;
+  busyUntil: number;
+  shot: Shot | null;
+  gen: number; // bumped whenever a pending "move on" timer is superseded
+  crateSeq: number;
+};
 const priv = new WeakMap<ArtState, Private>();
 const P = (s: ArtState) => priv.get(s)!;
 
@@ -52,14 +65,21 @@ function isMyTurn(s: ArtState, playerId: string) {
   return s.phase === 'aiming' && !!s.turn && s.teams[s.turn.team]?.playerId === playerId;
 }
 
+const newSim = (s: ArtState, extra: { seed?: number } = {}) => new Sim(P(s).terrain!, s.worms, s.craters, s.wind, { water: s.water, crates: s.crates, ...extra });
+
 function startMatch(s: ArtState, ctx: GameContext) {
   const seed = Math.floor(Math.random() * 2 ** 31);
   const terrain = Terrain.generate(seed);
-  P(s).terrain = terrain;
+  const p = P(s);
+  p.terrain = terrain;
+  p.shot = null;
   s.seed = seed;
   s.craters = [];
+  s.crates = [];
+  s.water = WATER_Y;
   s.winner = null;
   s.solo = s.teams.length === 1;
+  s.sdTurn = s.solo || !s.suddenDeath ? 0 : s.suddenDeath * s.teams.length;
   s.teams.forEach((t) => {
     t.ammo = fullAmmo();
     t.lastWorm = -1;
@@ -69,8 +89,7 @@ function startMatch(s: ArtState, ctx: GameContext) {
   // Spread worms across the island, teams mixed together.
   const total = s.teams.length * s.wormsPerTeam;
   const slots = shuffle(Array.from({ length: total }, (_, i) => i));
-  // Teams own consecutive ids, so alternating names give every team both kinds.
-  const names = politicianNames(total);
+  const names = politicianNames(s.teams.length, s.wormsPerTeam);
   // Bare, fairly flat ground (not the side of a tree), away from other worms.
   const goodSpot = (x: number, spacing: number) => {
     const top = terrain.surfaceY(x);
@@ -88,10 +107,10 @@ function startMatch(s: ArtState, ctx: GameContext) {
       x = Math.round(130 + lane * slots[id] + Math.random() * lane);
       y = goodSpot(x, 24);
     }
-    // Lane is all sea (or crowded): anywhere on land will do, then even right next to someone.
-    for (let attempt = 0; attempt < 600 && y === null; attempt++) {
+    // Lane is all sea (or crowded): anywhere on land will do, closer and closer to others.
+    for (let attempt = 0; attempt < 900 && y === null; attempt++) {
       x = Math.round(40 + Math.random() * (W - 80));
-      y = goodSpot(x, attempt < 300 ? 18 : 0);
+      y = goodSpot(x, attempt < 400 ? 30 : attempt < 700 ? 20 : 0);
     }
     if (y === null) y = terrain.surfaceY(x) - WORM_R - 1;
     const team = Math.floor(id / s.wormsPerTeam);
@@ -110,6 +129,7 @@ function checkOver(s: ArtState) {
   s.phase = 'over';
   s.winner = s.solo ? null : alive[0] ?? null;
   s.turn = null;
+  P(s).shot = null;
   return true;
 }
 
@@ -119,7 +139,7 @@ function armTurnTimer(s: ArtState, ctx: GameContext) {
   ctx.setTimer(Math.max(0, turn.endsAt - Date.now()), () => {
     if (s.turn !== turn || s.phase !== 'aiming') return;
     if (Date.now() < turn.endsAt - 20) return armTurnTimer(s, ctx);
-    nextTurn(s, ctx);
+    betweenTurns(s, ctx);
     ctx.broadcast();
   });
 }
@@ -129,7 +149,8 @@ function knockOut(s: ArtState, ctx: GameContext, team: number, reason: 'left' | 
   const t = s.teams[team];
   if (!t || t.out || (s.phase !== 'aiming' && s.phase !== 'resolving')) return;
   t.out = reason;
-  for (const w of s.worms) {
+  const shot = P(s).shot;
+  for (const w of [...s.worms, ...(shot?.snap.worms ?? [])]) {
     if (w.team !== team) continue;
     w.alive = false;
     w.hp = 0;
@@ -164,6 +185,7 @@ function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
   t.lastWorm = worm.id;
   s.wind = Math.round((Math.random() * 2 - 1) * 10) / 10;
   s.phase = 'aiming';
+  P(s).shot = null;
   const no = (s.turn?.no ?? 0) + 1;
   s.turn = {
     no,
@@ -177,26 +199,119 @@ function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
   armTurnTimer(s, ctx);
 }
 
-/** Play a simulation to everyone, then move on when the animation is done. */
-function runSim(s: ArtState, ctx: GameContext, sim: Sim, endsTurn: boolean) {
-  const tl: Timeline = sim.run();
-  ctx.emit({ type: 'timeline', tl } satisfies ArtEvent);
-  const ms = (tl.frames / FPS) * 1000 + 600;
-  P(s).busyUntil = Date.now() + ms;
+/** Weapon crates go to the picking worm's team. Health was already added in the sim. */
+function applyPickups(s: ArtState, events: Timeline['events']) {
+  for (const e of events) {
+    if (e.type !== 'pickup' || e.kind === 'health' || !isWeapon(e.kind)) continue;
+    const w = s.worms.find((x) => x.id === e.wormId);
+    const team = w && s.teams[w.team];
+    if (team && team.ammo[e.kind] >= 0) team.ammo[e.kind]++;
+  }
+}
 
-  const worm = currentWorm(s);
-  if (!endsTurn && worm?.alive && s.turn) {
-    // A jump or fall mid-turn: don't let the animation eat into the turn time.
+/** Wait for an animation to finish playing, then call `then` (unless superseded). */
+function afterAnimation(s: ArtState, ctx: GameContext, endsAt: number, then: () => void) {
+  const p = P(s);
+  const gen = ++p.gen;
+  p.busyUntil = endsAt;
+  ctx.setTimer(Math.max(0, endsAt - Date.now()), () => {
+    if (p.gen !== gen || s.phase !== 'resolving') return;
+    then();
+    ctx.broadcast();
+  });
+}
+
+const animMs = (tl: Timeline) => (tl.frames / FPS) * 1000 + PAUSE_MS;
+
+/** A jump, or a fall after walking off an edge, in the middle of a turn. */
+function runMoveSim(s: ArtState, ctx: GameContext, sim: Sim) {
+  const tl = sim.run();
+  applyPickups(s, tl.events);
+  ctx.emit({ type: 'timeline', tl } satisfies ArtEvent);
+  const ms = animMs(tl);
+  if (currentWorm(s)?.alive && s.turn) {
+    // Don't let the animation eat into the turn time.
+    P(s).busyUntil = Date.now() + ms;
     s.turn.endsAt += ms;
   } else {
     s.phase = 'resolving';
-    const no = s.turn?.no;
-    ctx.setTimer(ms, () => {
-      if (s.turn?.no !== no || s.phase !== 'resolving') return;
-      nextTurn(s, ctx);
-      ctx.broadcast();
-    });
+    afterAnimation(s, ctx, Date.now() + ms, () => betweenTurns(s, ctx));
   }
+}
+
+// ---- firing and the retreat ----
+
+/** Rewind to just before the shot and simulate it again with all retreat moves so far. */
+function simulateShot(s: ArtState): Timeline | null {
+  const p = P(s);
+  const sh = p.shot!;
+  p.terrain!.mask.set(sh.snap.mask);
+  s.craters.length = sh.snap.craters;
+  sh.snap.worms.forEach((w, i) => Object.assign(s.worms[i], w));
+  s.crates = sh.snap.crates.map((c) => ({ ...c }));
+  const worm = s.worms.find((w) => w.id === sh.wormId)!;
+  const sim = newSim(s, { seed: sh.seed });
+  if (!fire(sim, p.terrain!, worm, sh.weapon, sh.angle, sh.power, sh.tx, sh.ty)) return null;
+  sim.inputs = sh.inputs;
+  sim.minFrames = RETREAT_FRAMES;
+  return sim.run();
+}
+
+function publishShot(s: ArtState, ctx: GameContext, tl: Timeline, replace: boolean) {
+  const sh = P(s).shot!;
+  ctx.emit({ type: 'timeline', tl, replace, retreat: { wormId: sh.wormId, until: sh.until } } satisfies ArtEvent);
+  afterAnimation(s, ctx, sh.start + animMs(tl), () => {
+    applyPickups(s, tl.events);
+    P(s).shot = null;
+    betweenTurns(s, ctx);
+  });
+}
+
+/** A walk or jump by the shooter while their shot is still in the air. */
+function retreatMove(s: ArtState, ctx: GameContext, pid: string, kind: SimInput['kind'], dir: 1 | -1) {
+  const sh = P(s).shot;
+  const now = Date.now();
+  if (!sh || s.phase !== 'resolving' || sh.playerId !== pid || now >= sh.until) return false;
+  const last = sh.inputs.at(-1)?.f ?? 0;
+  // A couple of frames ahead of the server clock so clients haven't played past it yet.
+  const f = Math.max(last + 1, Math.ceil(((now - sh.start) / 1000) * FPS) + 2);
+  if (f >= RETREAT_FRAMES) return false;
+  sh.inputs.push({ f, wormId: sh.wormId, kind, dir });
+  publishShot(s, ctx, simulateShot(s)!, true);
+  return true;
+}
+
+// ---- between turns: sudden death and crate drops ----
+
+function crateSpot(s: ArtState) {
+  const t = P(s).terrain!;
+  for (let i = 0; i < 40; i++) {
+    const x = Math.round(80 + Math.random() * (W - 160));
+    const top = t.surfaceY(x);
+    if (top > 40 && top < s.water - 30) return x;
+  }
+  return null;
+}
+
+function betweenTurns(s: ArtState, ctx: GameContext) {
+  if (checkOver(s)) return;
+  const p = P(s);
+  const flood = s.sdTurn > 0 && (s.turn?.no ?? 0) >= s.sdTurn && s.water > MIN_WATER;
+  const dropX = s.cratesOn && s.crates.length < MAX_CRATES && Math.random() < CRATE_CHANCE ? crateSpot(s) : null;
+  if (!flood && dropX === null) return nextTurn(s, ctx);
+
+  const sim = newSim(s);
+  if (flood) sim.flood(Math.max(MIN_WATER, s.water - FLOOD_STEP));
+  if (dropX !== null) {
+    const weapon = Math.random() < 0.55 ? CRATE_WEAPONS[Math.floor(Math.random() * CRATE_WEAPONS.length)] : undefined;
+    sim.dropCrate({ id: ++p.crateSeq, x: dropX, y: 0, kind: weapon ? 'weapon' : 'health', weapon });
+  }
+  const tl = sim.run();
+  s.water = Math.round(sim.water);
+  applyPickups(s, tl.events);
+  ctx.emit({ type: 'timeline', tl } satisfies ArtEvent);
+  s.phase = 'resolving';
+  afterAnimation(s, ctx, Date.now() + animMs(tl), () => nextTurn(s, ctx));
 }
 
 export const artillery: GameModule<ArtState> = {
@@ -215,8 +330,13 @@ export const artillery: GameModule<ArtState> = {
       wormsPerTeam: 2,
       turnSeconds: 45,
       solo: false,
+      water: WATER_Y,
+      crates: [],
+      cratesOn: true,
+      suddenDeath: 8,
+      sdTurn: 0,
     };
-    priv.set(s, { terrain: null, lastWalk: 0, busyUntil: 0 });
+    priv.set(s, { terrain: null, lastWalk: 0, busyUntil: 0, shot: null, gen: 0, crateSeq: 0 });
     return s;
   },
 
@@ -253,8 +373,11 @@ export const artillery: GameModule<ArtState> = {
         if (!isHost || s.phase !== 'lobby') return 'Only the host can change settings';
         const wpt = num(a.wormsPerTeam, 1, 4);
         const secs = num(a.turnSeconds, 20, 90);
+        const sd = num(a.suddenDeath, 0, 30);
         if (wpt !== null) s.wormsPerTeam = Math.round(wpt);
         if (secs !== null) s.turnSeconds = Math.round(secs);
+        if (sd !== null) s.suddenDeath = Math.round(sd);
+        if (typeof a.crates === 'boolean') s.cratesOn = a.crates;
         return;
       }
 
@@ -278,8 +401,11 @@ export const artillery: GameModule<ArtState> = {
         s.worms = [];
         s.turn = null;
         s.craters = [];
+        s.crates = [];
+        s.water = WATER_Y;
         s.seed = 0;
         p.terrain = null;
+        p.shot = null;
         return;
 
       case 'surrender': {
@@ -291,29 +417,43 @@ export const artillery: GameModule<ArtState> = {
       }
 
       case 'walk': {
-        if (!isMyTurn(s, pid) || now < p.busyUntil) return QUIET;
-        if (now - p.lastWalk < 30) return QUIET;
-        p.lastWalk = now;
         const dir = a.dir === -1 ? -1 : 1;
+        if (now - p.lastWalk < 30) return QUIET;
+        if (retreatMove(s, ctx, pid, 'walk', dir)) {
+          p.lastWalk = now;
+          return QUIET;
+        }
+        if (!isMyTurn(s, pid) || now < p.busyUntil) return QUIET;
+        p.lastWalk = now;
         const worm = currentWorm(s)!;
         worm.facing = dir;
         // No walking budget: like the classic game, the turn clock is the limit.
         const { fell } = walk(p.terrain!, worm, dir, 3);
         if (fell) {
-          runSim(s, ctx, new Sim(p.terrain!, s.worms, s.craters, s.wind), false);
+          runMoveSim(s, ctx, newSim(s));
           return;
         }
+        const crate = crateTouching(s.crates, worm);
+        if (crate) {
+          openCrate(crate, worm);
+          s.crates = s.crates.filter((c) => c !== crate);
+          applyPickups(s, [{ f: 0, type: 'pickup', x: crate.x, y: crate.y, wormId: worm.id, kind: crate.weapon ?? 'health' }]);
+          ctx.emit({ type: 'pickup', wormId: worm.id, crate, x: crate.x, y: crate.y } satisfies ArtEvent);
+        }
         ctx.emit({ type: 'walk', wormId: worm.id, x: worm.x, y: worm.y, facing: worm.facing } satisfies ArtEvent);
-        return QUIET;
+        // A pickup changes HP, ammo and the crate list, so everyone needs the new state.
+        return crate ? undefined : QUIET;
       }
 
       case 'jump': {
+        const dir = currentWorm(s)?.facing ?? 1;
+        if (retreatMove(s, ctx, pid, 'jump', a.dir === -1 || a.dir === 1 ? a.dir : dir)) return QUIET;
         if (!isMyTurn(s, pid) || now < p.busyUntil) return QUIET;
         const worm = currentWorm(s)!;
         if (!grounded(p.terrain!, worm)) return QUIET;
-        const sim = new Sim(p.terrain!, s.worms, s.craters, s.wind);
+        const sim = newSim(s);
         sim.jump(worm);
-        runSim(s, ctx, sim, false);
+        runMoveSim(s, ctx, sim);
         return;
       }
 
@@ -341,16 +481,34 @@ export const artillery: GameModule<ArtState> = {
         const angle = num(a.angle, -Math.PI * 2, Math.PI * 2) ?? s.turn!.angle;
         const power = num(a.power, 0, 1) ?? s.turn!.power;
         const tx = num(a.tx, 0, W) ?? undefined;
-        const ty = num(a.ty, 0, WATER_Y) ?? undefined;
+        const ty = num(a.ty, 0, s.water) ?? undefined;
         if (WEAPON_BY_ID[a.weapon].aim === 'target' && tx === undefined) return 'Tap the map to pick a target';
 
         const worm = currentWorm(s)!;
         if (WEAPON_BY_ID[a.weapon].aim === 'angle') worm.facing = Math.cos(angle) >= 0 ? 1 : -1;
-        const sim = new Sim(p.terrain!, s.worms, s.craters, s.wind);
-        if (!fire(sim, p.terrain!, worm, a.weapon, angle, power, tx, ty)) return "Can't teleport there";
+        p.shot = {
+          playerId: pid,
+          wormId: worm.id,
+          start: now,
+          until: now + RETREAT_SECONDS * 1000,
+          seed: Math.floor(Math.random() * 2 ** 31),
+          weapon: a.weapon,
+          angle,
+          power,
+          tx,
+          ty,
+          inputs: [],
+          snap: { mask: p.terrain!.mask.slice(), worms: s.worms.map((w) => ({ ...w })), craters: s.craters.length, crates: s.crates.map((c) => ({ ...c })) },
+        };
+        const tl = simulateShot(s);
+        if (!tl) {
+          p.shot = null;
+          return "Can't teleport there";
+        }
         if (team.ammo[a.weapon] > 0) team.ammo[a.weapon]--;
         Object.assign(s.turn!, { angle, power, weapon: a.weapon });
-        runSim(s, ctx, sim, true);
+        s.phase = 'resolving';
+        publishShot(s, ctx, tl, false);
         return;
       }
 

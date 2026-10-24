@@ -55,12 +55,20 @@ the next person becomes host.
   candy) and a shape (island, twin isles, archipelago, mountain, terraces, sky
   islands). Scenery (trees, hay bales, cacti, snowmen, lollipops, girder bridges)
   is part of the terrain, so it blocks shots and can be blown up.
-- Worms are named after politicians, admired and infamous mixed, and some wear a
-  matching hat (`render.ts` has the name-to-hat table).
+- Worms are named after politicians: admired, infamous, and Swedish politicians
+  from all eight Riksdag parties (with a party tag and pin). Lists and speech-bubble
+  quips are in `src/shared/artillery/politicians.ts`; hats are in `render.ts`.
 - Walking is limited only by the turn clock. Grenades and the Holy Hay Bomb roll
   along the ground and bounce off worms.
+- Retreat: after firing you have 3 seconds to walk or jump. The server re-runs the
+  shot with your moves added (the sim is seeded, so everything before the move is
+  identical) and clients swap to the new timeline mid-playback.
+- Between turns, crates may parachute in (health +25, or an extra limited weapon),
+  and after the sudden-death round count the water rises each turn. Both are lobby
+  settings. A corner panel shows each team's health, worms left and who is away.
 - Controls: drag on the map to aim (distance = power), Space/FIRE to shoot,
   ←/→ or the buttons to walk, J to jump, W/S angle, Q/E power, 1–7 weapons.
+  The same list is on screen (H toggles it).
 
 ## Hay, Where?
 

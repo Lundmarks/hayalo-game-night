@@ -1,7 +1,10 @@
-// Physics for one shot (or a jump/fall). Runs on the server only; clients get
-// the resulting Timeline and play it back.
-import { Terrain, W, H, WATER_Y } from './terrain.ts';
-import type { Crater, ProjKind, SimEvent, Timeline, Track, WeaponId, Worm } from './types.ts';
+// Physics for one shot (or a jump/fall, or the between-turns flood and crate
+// drop). Runs on the server only; clients get the resulting Timeline and play
+// it back. Randomness comes from a seed, so the same inputs always give the
+// same timeline: the server re-runs a shot with the shooter's retreat moves
+// added and clients swap to the new timeline without anything earlier changing.
+import { rng, Terrain, W, H, WATER_Y } from './terrain.ts';
+import { CRATE_HEALTH, MAX_HP, type Crate, type Crater, type ProjKind, type SimEvent, type Timeline, type Track, type WeaponId, type Worm } from './types.ts';
 
 export const FPS = 60;
 export const SAMPLE = 2; // record positions every 2 frames (30 per second)
@@ -13,6 +16,12 @@ export const WIND_ACC = 190;
 export const WORM_R = 9;
 export const MAX_CLIMB = 5;
 const FALL_SAFE = 430;
+export const CRATE_R = 8; // half the crate's size
+const PARA_SPEED = 170; // crates float down this fast (px/s)
+export const FLOOD_FRAMES = 90; // how long the water takes to rise each turn
+
+export type SimInput = { f: number; wormId: number; kind: 'walk' | 'jump'; dir: 1 | -1 };
+type SimOpts = { water?: number; seed?: number; crates?: Crate[] };
 
 type ProjSpec = { radius: number; damage: number; fuse: number; bouncy: boolean; wind: boolean };
 const PROJ: Record<ProjKind, ProjSpec> = {
@@ -26,6 +35,7 @@ const PROJ: Record<ProjKind, ProjSpec> = {
 
 type Proj = { kind: ProjKind; x: number; y: number; vx: number; vy: number; age: number; owner: number; track: Track; dead: boolean };
 type Mover = { worm: Worm; vx: number; vy: number; track: Track };
+type CrateMover = { c: Crate; vy: number; para: boolean; track: Track };
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
@@ -38,8 +48,8 @@ export function grounded(t: Terrain, w: Worm) {
 }
 
 /** Is there room for a worm centred here? */
-export function clearSpot(t: Terrain, x: number, y: number) {
-  if (x < WORM_R || x > W - WORM_R || y < WORM_R || y > WATER_Y - WORM_R) return false;
+export function clearSpot(t: Terrain, x: number, y: number, water = WATER_Y) {
+  if (x < WORM_R || x > W - WORM_R || y < WORM_R || y > water - WORM_R) return false;
   for (let a = 0; a < 8; a++) {
     const dx = [1, 0.7, 0, -0.7, -1, -0.7, 0, 0.7][a];
     const dy = [0, 0.7, 1, 0.7, 0, -0.7, -1, -0.7][a];
@@ -75,6 +85,19 @@ export function walk(t: Terrain, w: Worm, dir: 1 | -1, px: number) {
   return { moved, fell: false };
 }
 
+/** The crate a worm at its current spot is touching, if any. */
+export function crateTouching(crates: Crate[], w: Worm) {
+  return crates.find((c) => Math.abs(w.x - c.x) < WORM_R + CRATE_R && Math.abs(w.y - c.y) < WORM_R + CRATE_R);
+}
+
+/** Give a worm what's in a crate. Weapons go to the team's ammo, which the caller handles. */
+export function openCrate(c: Crate, w: Worm) {
+  if (c.kind !== 'health') return 0;
+  const amount = Math.max(0, Math.min(MAX_HP, w.hp + CRATE_HEALTH) - w.hp);
+  w.hp += amount;
+  return amount;
+}
+
 export class Sim {
   frame = 0;
   private events: SimEvent[] = [];
@@ -84,22 +107,38 @@ export class Sim {
   private spawns: { frame: number; fn: () => void }[] = [];
   private seq = 0;
   private before: Timeline['before'];
+  private rand: () => number;
+  /** Current water level; rises during a flood. */
+  water: number;
+  private flooding: { from: number; to: number; start: number } | null = null;
+  private crates: Crate[];
+  private cratesSeen: Timeline['crates'];
+  private crateMovers = new Map<number, CrateMover>();
+  /** Moves by the shooter during the retreat, each applied at its frame. */
+  inputs: SimInput[] = [];
+  /** Keep the timeline going at least this long (the retreat window). */
+  minFrames = 0;
 
   constructor(
     private t: Terrain,
     private worms: Worm[],
     private craters: Crater[],
     private wind: number,
+    opts: SimOpts = {},
   ) {
     this.before = worms.map((w) => ({ id: w.id, x: w.x, y: w.y, hp: w.hp, alive: w.alive }));
+    this.water = opts.water ?? WATER_Y;
+    this.rand = rng(opts.seed ?? Math.floor(Math.random() * 2 ** 31));
+    this.crates = opts.crates ?? [];
+    this.cratesSeen = this.crates.map((c) => ({ ...c, from: 0 }));
   }
 
   event(e: Omit<SimEvent, 'f'>) {
     this.events.push({ f: this.frame, ...e, x: round1(e.x), y: round1(e.y) });
   }
 
-  private track(kind: Track['kind'], x: number, y: number, wormId?: number): Track {
-    const tr: Track = { key: `${kind}${this.seq++}`, kind, wormId, start: this.frame, end: -1, pts: [round1(x), round1(y)] };
+  private track(kind: Track['kind'], x: number, y: number, extra: Partial<Track> = {}): Track {
+    const tr: Track = { key: `${kind}${this.seq++}`, kind, start: this.frame, end: -1, pts: [round1(x), round1(y)], ...extra };
     this.tracks.push(tr);
     return tr;
   }
@@ -124,7 +163,7 @@ export class Sim {
       m.vx += vx;
       m.vy += vy;
     } else {
-      this.movers.set(w.id, { worm: w, vx, vy, track: this.track('worm', w.x, w.y, w.id) });
+      this.movers.set(w.id, { worm: w, vx, vy, track: this.track('worm', w.x, w.y, { wormId: w.id }) });
     }
   }
 
@@ -150,6 +189,128 @@ export class Sim {
       const ny = d > 0.5 ? dy / d : -1;
       const kv = (200 + damage * 5) * f;
       this.knock(w, nx * kv, ny * kv - 160 * f);
+    }
+
+    // Crates in the blast break open. Weapon crates go off too.
+    for (const c of [...this.crates]) {
+      if (Math.hypot(c.x - x, c.y - y) >= r + CRATE_R) continue;
+      this.removeCrate(c, c.y);
+      this.event({ type: 'crate', kind: 'destroy', x: c.x, y: c.y, crateId: c.id });
+      if (c.kind === 'weapon') this.later(4, () => this.explode(c.x, c.y, 22, 22, 'crate'));
+    }
+  }
+
+  // ---- crates ----
+
+  /** Parachute a crate in from above the map at c.x. */
+  dropCrate(c: Crate) {
+    c.y = -12;
+    this.crates.push(c);
+    this.cratesSeen.push({ ...c, from: this.frame });
+    this.event({ type: 'crate', kind: 'drop', x: c.x, y: c.y, crateId: c.id });
+    this.crateMovers.set(c.id, { c, vy: PARA_SPEED, para: true, track: this.track('crate', c.x, c.y, { crateId: c.id, para: true }) });
+  }
+
+  private removeCrate(c: Crate, y: number) {
+    const m = this.crateMovers.get(c.id);
+    if (m) this.endTrack(m.track, c.x, y);
+    this.crateMovers.delete(c.id);
+    this.crates.splice(this.crates.indexOf(c), 1);
+  }
+
+  private crateSupported(c: Crate) {
+    const b = c.y + CRATE_R;
+    // Narrower than the crate, so one hanging off a ledge by its corner tips off.
+    return this.t.solid(c.x - 3, b) || this.t.solid(c.x, b) || this.t.solid(c.x + 3, b);
+  }
+
+  private stepCrates() {
+    for (const c of [...this.crates]) {
+      let m = this.crateMovers.get(c.id);
+      if (!m) {
+        // The ground under it was blown away: it falls (no parachute this time).
+        if (this.crateSupported(c)) continue;
+        m = { c, vy: 0, para: false, track: this.track('crate', c.x, c.y, { crateId: c.id }) };
+        this.crateMovers.set(c.id, m);
+      }
+      if (!m.para) m.vy = Math.min(700, m.vy + G * DT);
+      const steps = Math.max(1, Math.ceil((m.vy * DT) / 2));
+      for (let s = 0; s < steps; s++) {
+        c.y += (m.vy * DT) / steps;
+        if (c.y > this.water) {
+          this.removeCrate(c, this.water);
+          this.event({ type: 'splash', x: c.x, y: this.water });
+          this.event({ type: 'crate', kind: 'sink', x: c.x, y: this.water, crateId: c.id });
+          break;
+        }
+        if (this.crateSupported(c)) {
+          c.y = Math.round(c.y);
+          while (this.t.solid(c.x, c.y + CRATE_R - 1) && c.y > 0) c.y--;
+          this.endTrack(m.track, c.x, c.y);
+          this.crateMovers.delete(c.id);
+          this.event({ type: 'crate', kind: 'land', x: c.x, y: c.y, crateId: c.id, amount: Math.round(m.vy) });
+          break;
+        }
+      }
+    }
+  }
+
+  private pickups() {
+    if (!this.crates.length) return;
+    for (const w of this.worms) {
+      if (!w.alive) continue;
+      const c = crateTouching(this.crates, w);
+      if (!c) continue;
+      const amount = openCrate(c, w);
+      this.removeCrate(c, c.y);
+      this.event({ type: 'pickup', x: c.x, y: c.y, wormId: w.id, crateId: c.id, kind: c.kind === 'health' ? 'health' : c.weapon, amount });
+    }
+  }
+
+  // ---- sudden death ----
+
+  /** Raise the water to `to` over FLOOD_FRAMES, drowning anyone it reaches. */
+  flood(to: number) {
+    this.flooding = { from: this.water, to, start: this.frame };
+    this.event({ type: 'flood', x: 0, y: to, amount: this.water });
+    this.minFrames = Math.max(this.minFrames, this.frame + FLOOD_FRAMES + 10);
+  }
+
+  private stepFlood() {
+    const fl = this.flooding;
+    if (!fl) return;
+    const k = Math.min(1, (this.frame - fl.start) / FLOOD_FRAMES);
+    this.water = fl.from + (fl.to - fl.from) * k;
+    for (const w of this.worms) {
+      if (!w.alive || this.movers.has(w.id) || w.y < this.water) continue;
+      w.alive = false;
+      w.hp = 0;
+      this.event({ type: 'splash', x: w.x, y: this.water });
+      this.event({ type: 'die', x: w.x, y: this.water, wormId: w.id, kind: 'drown' });
+    }
+    for (const c of [...this.crates]) {
+      if (this.crateMovers.has(c.id) || c.y < this.water) continue;
+      this.removeCrate(c, c.y);
+      this.event({ type: 'crate', kind: 'sink', x: c.x, y: c.y, crateId: c.id });
+    }
+    if (k >= 1) this.flooding = null;
+  }
+
+  // ---- retreat ----
+
+  private applyInputs() {
+    for (const i of this.inputs) {
+      if (i.f !== this.frame) continue;
+      const w = this.worms.find((x) => x.id === i.wormId);
+      if (!w?.alive || this.movers.has(w.id) || !grounded(this.t, w)) continue;
+      w.facing = i.dir;
+      if (i.kind === 'jump') {
+        this.jump(w);
+        continue;
+      }
+      walk(this.t, w, i.dir, 3);
+      // A one-sample track pins the worm's new spot from this frame on.
+      this.track('worm', w.x, w.y, { wormId: w.id }).end = this.frame;
     }
   }
 
@@ -215,7 +376,7 @@ export class Sim {
     this.explode(p.x, p.y, spec.radius, spec.damage, p.kind);
     if (p.kind === 'cluster') {
       for (let i = 0; i < 5; i++) {
-        this.launch('bomblet', p.x, p.y - 6, (i - 2) * 75 + (Math.random() - 0.5) * 40, -240 - Math.random() * 120, -1);
+        this.launch('bomblet', p.x, p.y - 6, (i - 2) * 75 + (this.rand() - 0.5) * 40, -240 - this.rand() * 120, -1);
       }
     }
   }
@@ -265,10 +426,10 @@ export class Sim {
       p.x += (p.vx * DT) / steps;
       p.y += (p.vy * DT) / steps;
 
-      if (p.y > WATER_Y) {
+      if (p.y > this.water) {
         p.dead = true;
-        this.endTrack(p.track, p.x, WATER_Y);
-        this.event({ type: 'splash', x: p.x, y: WATER_Y });
+        this.endTrack(p.track, p.x, this.water);
+        this.event({ type: 'splash', x: p.x, y: this.water });
         return;
       }
       if (p.x < -100 || p.x > W + 100) {
@@ -326,13 +487,13 @@ export class Sim {
       let nx = w.x + (m.vx * DT) / steps;
       let ny = w.y + (m.vy * DT) / steps;
 
-      if (ny > WATER_Y) {
+      if (ny > this.water) {
         w.alive = false;
         w.hp = 0;
-        this.endTrack(m.track, nx, WATER_Y);
+        this.endTrack(m.track, nx, this.water);
         this.movers.delete(w.id);
-        this.event({ type: 'splash', x: nx, y: WATER_Y });
-        this.event({ type: 'die', x: nx, y: WATER_Y, wormId: w.id, kind: 'drown' });
+        this.event({ type: 'splash', x: nx, y: this.water });
+        this.event({ type: 'die', x: nx, y: this.water, wormId: w.id, kind: 'drown' });
         return;
       }
       if (m.vx !== 0 && this.t.solid(nx + Math.sign(m.vx) * WORM_R, ny)) {
@@ -363,6 +524,8 @@ export class Sim {
     for (const p of this.projs) if (!p.dead && (this.frame - p.track.start) % SAMPLE === 0) p.track.pts.push(round1(p.x), round1(p.y));
     for (const m of this.movers.values())
       if ((this.frame - m.track.start) % SAMPLE === 0) m.track.pts.push(round1(m.worm.x), round1(m.worm.y));
+    for (const m of this.crateMovers.values())
+      if ((this.frame - m.track.start) % SAMPLE === 0) m.track.pts.push(round1(m.c.x), round1(m.c.y));
   }
 
   run(maxFrames = FPS * 30): Timeline {
@@ -371,20 +534,26 @@ export class Sim {
       const due = this.spawns.filter((s) => s.frame <= this.frame);
       this.spawns = this.spawns.filter((s) => s.frame > this.frame);
       due.forEach((s) => s.fn());
+      this.applyInputs();
 
       for (const p of this.projs) if (!p.dead) this.stepProj(p);
       this.projs = this.projs.filter((p) => !p.dead);
       for (const m of [...this.movers.values()]) this.stepMover(m);
+      this.stepCrates();
+      this.stepFlood();
       this.settle();
+      this.pickups();
 
       this.frame++;
       this.sample();
-      if (!this.projs.length && !this.movers.size && !this.spawns.length) break;
+      const busy = this.projs.length || this.movers.size || this.spawns.length || this.crateMovers.size || this.flooding;
+      if (!busy && this.frame >= this.minFrames) break;
     }
 
     // Anything still flying when time ran out just stops where it is.
     for (const p of this.projs) this.endTrack(p.track, p.x, p.y);
     for (const m of this.movers.values()) this.endTrack(m.track, m.worm.x, m.worm.y);
+    for (const m of this.crateMovers.values()) this.endTrack(m.track, m.c.x, m.c.y);
 
     let tail = 15;
     for (const w of this.worms) {
@@ -395,12 +564,13 @@ export class Sim {
         tail = 50;
       }
     }
-    return { frames: this.frame + tail, tracks: this.tracks, events: this.events, before: this.before };
+    return { frames: this.frame + tail, tracks: this.tracks, events: this.events, before: this.before, crates: this.cratesSeen };
   }
 }
 
 /** Fire a weapon from a worm. Returns false if the shot is not allowed. */
 export function fire(sim: Sim, t: Terrain, w: Worm, weapon: WeaponId, angle: number, power: number, tx?: number, ty?: number) {
+  if (weapon === 'teleport' && tx !== undefined && ty !== undefined && !clearSpot(t, tx, ty, sim.water)) return false;
   const speed = 120 + power * (MAX_SPEED - 120);
   const vx = Math.cos(angle) * speed;
   const vy = Math.sin(angle) * speed;
@@ -424,7 +594,6 @@ export function fire(sim: Sim, t: Terrain, w: Worm, weapon: WeaponId, angle: num
     return true;
   }
   if (weapon === 'teleport' && tx !== undefined && ty !== undefined) {
-    if (!clearSpot(t, tx, ty)) return false;
     sim.teleport(w, tx, ty);
     return true;
   }

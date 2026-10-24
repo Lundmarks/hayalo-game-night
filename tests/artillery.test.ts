@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { H, mapInfo, SHAPES, Terrain, W, WATER_Y } from '../src/shared/artillery/terrain.ts';
 import { Sim, walk, WORM_R } from '../src/shared/artillery/sim.ts';
 import type { ArtState, Worm } from '../src/shared/artillery/types.ts';
-import { artillery, HEROES, politicianNames, VILLAINS } from '../src/server/games/artillery.ts';
+import { artillery } from '../src/server/games/artillery.ts';
+import { ADMIRED, INFAMOUS, politicianNames, SWEDISH } from '../src/shared/artillery/politicians.ts';
 import { clock, fakeRoom } from './fake-room.ts';
 
 const room = (ids: string[]) => {
@@ -13,10 +14,11 @@ const room = (ids: string[]) => {
 // Shorthand so the tests read like the old helper.
 const nowOf = () => clock.now;
 
-function startMatch(ids: string[], wormsPerTeam = 2) {
+/** Starts a match. Crates and sudden death are off unless asked for, so turns are predictable. */
+function startMatch(ids: string[], wormsPerTeam = 2, opts: { crates?: boolean; suddenDeath?: number } = {}) {
   const r = room(ids);
   for (const id of ids) r.act(id, { a: 'join' });
-  r.act(ids[0], { a: 'settings', wormsPerTeam });
+  r.act(ids[0], { a: 'settings', wormsPerTeam, crates: opts.crates ?? false, suddenDeath: opts.suddenDeath ?? 0 });
   r.act(ids[0], { a: 'start' });
   assert.equal(r.s.phase, 'aiming');
   return r;
@@ -89,11 +91,17 @@ test('each team cycles through its own worms, skipping dead ones', () => {
 });
 
 test('turn time is extended while a jump animation plays', () => {
-  const r = startMatch(['a', 'b']);
-  const pid = r.s.teams[r.s.turn!.team].playerId;
+  // On a random map the jump can land in the sea (which ends the turn), so
+  // try fresh maps until the worm survives it.
+  let r = startMatch(['a', 'b']);
+  let endsAt = 0;
+  for (let tries = 0; tries < 10; tries++) {
+    if (tries) r = startMatch(['a', 'b']);
+    endsAt = r.s.turn!.endsAt;
+    r.act(r.s.teams[r.s.turn!.team].playerId, { a: 'jump' });
+    if (r.s.phase === 'aiming') break;
+  }
   const no = r.s.turn!.no;
-  const endsAt = r.s.turn!.endsAt;
-  r.act(pid, { a: 'jump' });
   assert.ok(r.s.turn!.endsAt > endsAt);
   r.advance(endsAt - nowOf() + 10); // past the original deadline
   assert.equal(r.s.turn!.no, no);
@@ -199,11 +207,133 @@ test('worms always spawn on dry land, even on full six-team maps', () => {
 });
 
 test('worms are named after politicians, each team getting a mix', () => {
+  const kind = (n: string) => (ADMIRED.includes(n) ? 'admired' : INFAMOUS.includes(n) ? 'infamous' : n in SWEDISH ? 'swedish' : 'unknown');
   const r = startMatch(['a', 'b', 'c'], 2);
   for (let team = 0; team < 3; team++) {
-    const names = r.s.worms.filter((w) => w.team === team).map((w) => w.name);
-    assert.equal(names.filter((n) => HEROES.includes(n)).length, 1);
-    assert.equal(names.filter((n) => VILLAINS.includes(n)).length, 1);
+    const kinds = r.s.worms.filter((w) => w.team === team).map((w) => kind(w.name));
+    assert.ok(!kinds.includes('unknown'));
+    assert.equal(new Set(kinds).size, 2, `team ${team} got ${kinds}`);
   }
-  assert.equal(new Set(politicianNames(30)).size, 30);
+  const names = politicianNames(6, 4);
+  assert.equal(new Set(names).size, 24);
+  assert.ok(names.some((n) => n in SWEDISH));
+});
+
+// ---- retreat, sudden death, crates ----
+
+type TimelineEvent = { type: 'timeline'; tl: import('../src/shared/artillery/types.ts').Timeline; replace?: boolean; retreat?: { wormId: number; until: number } };
+const timelines = (r: { events: unknown[] }) => r.events.filter((e): e is TimelineEvent => (e as TimelineEvent).type === 'timeline');
+
+test('the shooter can keep walking for a few seconds after firing', () => {
+  const r = startMatch(['a', 'b']);
+  const pid = r.s.teams[r.s.turn!.team].playerId;
+  const shooter = r.s.worms.find((w) => w.id === r.s.turn!.wormId)!;
+  // Fire straight up and slow, so the shot is in the air a while.
+  r.act(pid, { a: 'fire', weapon: 'bazooka', angle: -Math.PI / 2, power: 0.3 });
+  assert.equal(r.s.phase, 'resolving');
+  const first = timelines(r).at(-1)!;
+  assert.ok(first.retreat && first.retreat.wormId === shooter.id);
+  // The timeline lasts at least the retreat window.
+  assert.ok(first.tl.frames >= 3 * 60);
+
+  for (let i = 0; i < 20; i++) {
+    r.advance(50);
+    r.act(pid, { a: 'walk', dir: shooter.facing });
+  }
+  const last = timelines(r).at(-1)!;
+  assert.equal(last.replace, true);
+  // Events from before the first move are exactly the same in the new timeline.
+  const firstMove = Math.min(...last.tl.tracks.filter((t) => t.kind === 'worm' && t.start === t.end).map((t) => t.start));
+  assert.deepEqual(
+    last.tl.events.filter((e) => e.f < firstMove),
+    first.tl.events.filter((e) => e.f < firstMove),
+  );
+  // The worm took steps (pose tracks), unless a wall was right there.
+  assert.ok(last.tl.tracks.some((t) => t.kind === 'worm' && t.wormId === shooter.id && t.start === t.end));
+
+  // Moves after the window are ignored, and the turn moves on after the animation.
+  r.advance(3000);
+  const count = timelines(r).length;
+  r.act(pid, { a: 'walk', dir: 1 });
+  assert.equal(timelines(r).length, count);
+  r.advance(30_000);
+  assert.equal(r.s.phase, 'aiming');
+  assert.notEqual(r.s.teams[r.s.turn!.team].playerId, pid);
+});
+
+test('only the shooter can move during the retreat', () => {
+  const r = startMatch(['a', 'b']);
+  const pid = r.s.teams[r.s.turn!.team].playerId;
+  const other = pid === 'a' ? 'b' : 'a';
+  r.act(pid, { a: 'fire', weapon: 'bazooka', angle: -Math.PI / 2, power: 0.3 });
+  const count = timelines(r).length;
+  r.advance(100);
+  r.act(other, { a: 'walk', dir: 1 });
+  assert.equal(timelines(r).length, count);
+});
+
+test('sudden death raises the water between turns and drowns worms it reaches', () => {
+  const r = startMatch(['a', 'b'], 2, { suddenDeath: 1 });
+  assert.equal(r.s.sdTurn, 2);
+  // Park a worm of the team that is not playing right next to the waterline.
+  const victim = r.s.worms.find((w) => w.team !== r.s.turn!.team)!;
+  victim.y = WATER_Y - 12;
+  r.advance(r.s.turnSeconds * 1000 + 1); // turn 1 ends: no flood yet
+  assert.equal(r.s.water, WATER_Y);
+  r.advance(r.s.turnSeconds * 1000 + 1); // turn 2 ends: the water rises
+  const flood = timelines(r).at(-1)!.tl.events.find((e) => e.type === 'flood');
+  assert.ok(flood);
+  assert.ok(r.s.water < WATER_Y);
+  assert.equal(victim.alive, false);
+});
+
+test('crates parachute in, land, and give health when a worm touches them', () => {
+  const t = flatTerrain();
+  const w = worm(0, 600, 400 - WORM_R - 1);
+  w.hp = 50;
+  const crates: import('../src/shared/artillery/types.ts').Crate[] = [];
+  const sim = new Sim(t, [w], [], 0, { crates });
+  sim.dropCrate({ id: 1, x: 300, y: 0, kind: 'health' });
+  const tl = sim.run();
+  assert.ok(tl.tracks.some((tr) => tr.kind === 'crate' && tr.para));
+  assert.equal(crates.length, 1);
+  assert.equal(crates[0].y, 400 - 8); // resting on the ground
+
+  // Walk the worm over to it in a match.
+  const r = startMatch(['a', 'b']);
+  const pid = r.s.teams[r.s.turn!.team].playerId;
+  const me = r.s.worms.find((x) => x.id === r.s.turn!.wormId)!;
+  me.hp = 40;
+  r.s.crates.push({ id: 9, x: me.x + 14, y: me.y, kind: 'health' }, { id: 10, x: me.x - 14, y: me.y, kind: 'weapon', weapon: 'haybomb' });
+  const before = r.s.teams[r.s.turn!.team].ammo.haybomb;
+  r.act(pid, { a: 'walk', dir: 1 });
+  assert.equal(me.hp, 65);
+  assert.equal(r.s.crates.length, 1);
+  r.advance(100);
+  for (let i = 0; i < 3; i++) {
+    r.advance(40);
+    r.act(pid, { a: 'walk', dir: -1 });
+  }
+  assert.equal(r.s.crates.length, 0);
+  assert.equal(r.s.teams[r.s.turn!.team].ammo.haybomb, before + 1);
+});
+
+test('an explosion destroys crates, and weapon crates blow up too', () => {
+  const t = flatTerrain();
+  const crates: import('../src/shared/artillery/types.ts').Crate[] = [
+    { id: 1, x: 500, y: 392, kind: 'weapon', weapon: 'cluster' },
+    { id: 2, x: 800, y: 392, kind: 'health' },
+  ];
+  const sim = new Sim(t, [], [], 0, { crates });
+  sim.explode(495, 395, 20, 10, 'test');
+  const tl = sim.run();
+  assert.deepEqual(crates.map((c) => c.id), [2]);
+  assert.equal(tl.events.filter((e) => e.type === 'explode').length, 2);
+});
+
+test('crate drops happen between turns when crates are on', () => {
+  const r = startMatch(['a', 'b'], 2, { crates: true });
+  for (let i = 0; i < 30; i++) r.advance(r.s.turnSeconds * 1000 + 1);
+  r.advance(20_000);
+  assert.ok(timelines(r).some((e) => e.tl.events.some((x) => x.type === 'crate' && x.kind === 'drop')));
 });

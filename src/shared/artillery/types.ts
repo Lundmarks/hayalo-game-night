@@ -34,6 +34,21 @@ export type Worm = {
   facing: 1 | -1;
 };
 
+export type Crate = {
+  id: number;
+  x: number;
+  y: number; // centre
+  kind: 'health' | 'weapon';
+  weapon?: WeaponId;
+};
+
+/** Weapons a weapon crate can hold (the limited ones). */
+export const CRATE_WEAPONS: WeaponId[] = ['cluster', 'cluster', 'airstrike', 'haybomb', 'teleport'];
+export const CRATE_HEALTH = 25;
+export const MAX_HP = 150;
+/** Seconds you can keep moving after firing. */
+export const RETREAT_SECONDS = 3;
+
 export type Team = {
   playerId: string;
   name: string;
@@ -65,14 +80,24 @@ export type ArtState = {
   wormsPerTeam: number;
   turnSeconds: number;
   solo: boolean;
+  /** Water level (y). Starts at WATER_Y and rises in sudden death. */
+  water: number;
+  crates: Crate[];
+  /** Lobby settings: crate drops on/off, sudden death after N rounds (0 = never). */
+  cratesOn: boolean;
+  suddenDeath: number;
+  /** Turn number after which the water starts rising (0 = never), fixed at match start. */
+  sdTurn: number;
 };
 
 export type ProjKind = 'rocket' | 'grenade' | 'cluster' | 'bomblet' | 'missile' | 'haybomb';
 
 export type Track = {
   key: string;
-  kind: 'worm' | ProjKind;
+  kind: 'worm' | 'crate' | ProjKind;
   wormId?: number;
+  crateId?: number;
+  para?: boolean; // a crate floating down on its parachute
   start: number; // frame
   end: number; // frame
   pts: number[]; // x,y pairs every SAMPLE frames from start
@@ -80,7 +105,11 @@ export type Track = {
 
 export type SimEvent = {
   f: number;
-  type: 'fire' | 'explode' | 'bounce' | 'splash' | 'damage' | 'die' | 'shot' | 'airstrike' | 'teleport' | 'land' | 'jump';
+  type:
+    | 'fire' | 'explode' | 'bounce' | 'splash' | 'damage' | 'die' | 'shot' | 'airstrike' | 'teleport' | 'land' | 'jump'
+    | 'flood' // water rises from `amount` to `y`
+    | 'crate' // kind: 'drop' | 'land' | 'destroy' | 'sink'
+    | 'pickup'; // wormId picked up crateId (kind: 'health' | weapon id)
   x: number;
   y: number;
   x2?: number;
@@ -90,6 +119,7 @@ export type SimEvent = {
   wormId?: number;
   amount?: number;
   crater?: number;
+  crateId?: number;
 };
 
 export type Timeline = {
@@ -97,17 +127,22 @@ export type Timeline = {
   tracks: Track[];
   events: SimEvent[];
   before: { id: number; x: number; y: number; hp: number; alive: boolean }[];
+  /** Every crate that exists at some point, as it was when it appeared (`from` frame). */
+  crates: (Crate & { from: number })[];
 };
 
 export type ArtEvent =
-  | { type: 'timeline'; tl: Timeline }
+  // `replace`: the same shot re-simulated with the shooter's retreat moves; keep
+  // playing from the current frame. `retreat`: who may still move, and until when.
+  | { type: 'timeline'; tl: Timeline; replace?: boolean; retreat?: { wormId: number; until: number } }
   | { type: 'walk'; wormId: number; x: number; y: number; facing: 1 | -1 }
+  | { type: 'pickup'; wormId: number; crate: Crate; x: number; y: number }
   | { type: 'aim'; angle: number; power: number; weapon: WeaponId };
 
 export type ArtAction =
   | { a: 'join' }
   | { a: 'leave' }
-  | { a: 'settings'; wormsPerTeam?: number; turnSeconds?: number }
+  | { a: 'settings'; wormsPerTeam?: number; turnSeconds?: number; crates?: boolean; suddenDeath?: number }
   | { a: 'start' }
   | { a: 'walk'; dir: 1 | -1 }
   | { a: 'jump' }

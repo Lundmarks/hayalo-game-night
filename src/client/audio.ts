@@ -11,6 +11,7 @@ export type Sound =
   | 'explosion' | 'bigExplosion' | 'smallExplosion' | 'launch' | 'throw' | 'bounce' | 'splash' | 'shotgun'
   | 'plane' | 'whistle' | 'teleport' | 'jump' | 'land' | 'hurt' | 'die' | 'holy' | 'fuse' | 'step'
   | 'boing' | 'bonk' | 'pop' | 'slide' | 'bubbles' | 'ricochet' | 'chirp' | 'whoosh' | 'hup' | 'sadTrombone'
+  | 'pickup' | 'heal' | 'crateLand' | 'parachute' | 'flood' | 'alarm' | 'retreat'
   | 'click' | 'select' | 'yourTurn' | 'turn' | 'tick' | 'win' | 'lose' | 'place';
 
 type Opts = { pan?: number; gain?: number; pitch?: number };
@@ -133,7 +134,7 @@ class AudioEngine {
     if (!ctx || this.muted || ctx.state !== 'running') return;
     if (this.voices > 28) return;
 
-    const isUi = ['click', 'select', 'yourTurn', 'turn', 'tick', 'win', 'lose', 'place', 'sadTrombone'].includes(name);
+    const isUi = ['click', 'select', 'yourTurn', 'turn', 'tick', 'win', 'lose', 'place', 'sadTrombone', 'alarm', 'retreat'].includes(name);
     const out = ctx.createGain();
     out.gain.value = o.gain ?? 1;
     const panner = ctx.createStereoPanner();
@@ -474,6 +475,42 @@ const RECIPES: Record<Sound, Recipe> = {
       o.stop(st + len + 0.05);
     });
     return 2;
+  },
+
+  pickup: notes([784, 988, 1175, 1568], 0.06, 'square', 0.08, 0.16),
+  heal: (a, out, t) => {
+    notes([523.3, 659.3, 784, 1046.5], 0.07, 'sine', 0.2, 0.35)(a, out, t, 1);
+    notes([1046.5, 1318.5], 0.07, 'triangle', 0.06, 0.4)(a, out, t + 0.28, 1);
+    return 0.8;
+  },
+  crateLand: (a, out, t, p) => {
+    a.tone(out, t, { type: 'triangle', from: 210 * p, to: 120, peak: 0.35, decay: 0.12 });
+    a.burst(out, t, { type: 'bandpass', from: 900, q: 2, peak: 0.25, decay: 0.08 });
+    return 0.2;
+  },
+  parachute: (a, out, t) => {
+    // A cloth "fwump" as the canopy opens.
+    a.burst(out, t, { type: 'lowpass', from: 700, to: 200, attack: 0.03, peak: 0.25, decay: 0.3 });
+    a.tone(out, t + 0.05, { from: 880, to: 1320, peak: 0.06, decay: 0.2, sweep: 0.15 });
+    return 0.4;
+  },
+  flood: (a, out, t) => {
+    // Rushing water with a low rumble.
+    a.burst(out, t, { type: 'lowpass', from: 500, to: 900, attack: 0.4, peak: 0.35, decay: 1.4 });
+    a.burst(out, t, { type: 'bandpass', from: 2400, q: 0.8, attack: 0.3, peak: 0.08, decay: 1.2 });
+    a.tone(out, t, { from: 55, to: 45, attack: 0.3, peak: 0.25, decay: 1.4 });
+    return 1.8;
+  },
+  alarm: (a, out, t) => {
+    for (let i = 0; i < 3; i++) {
+      a.tone(out, t + i * 0.42, { type: 'sawtooth', from: 440, to: 660, attack: 0.02, peak: 0.07, decay: 0.36, sweep: 0.3 });
+    }
+    return 1.4;
+  },
+  retreat: (a, out, t) => {
+    a.tone(out, t, { type: 'square', from: 660, peak: 0.06, decay: 0.06 });
+    a.tone(out, t + 0.09, { type: 'square', from: 880, peak: 0.06, decay: 0.08 });
+    return 0.2;
   },
 
   click: (a, out, t) => {

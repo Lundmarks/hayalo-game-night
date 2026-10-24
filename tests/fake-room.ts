@@ -18,9 +18,10 @@ export function fakeRoom<S>(module: GameModule<S>, ids: string[]) {
   let players: Player[] = ids.map((id) => ({ id, name: id, avatarUrl: null }));
   const timers: { at: number; fn: () => void }[] = [];
   let broadcasts = 0;
+  const events: unknown[] = [];
   const ctx: GameContext = {
     broadcast: () => void broadcasts++,
-    emit() {},
+    emit: (e) => void events.push(e),
     players: () => players,
     hostId: () => players[0]?.id ?? null,
     setTimer: (ms, fn) => void timers.push({ at: clock.now + ms, fn }),
@@ -29,6 +30,8 @@ export function fakeRoom<S>(module: GameModule<S>, ids: string[]) {
   return {
     s,
     ctx,
+    /** Every event the module emitted, oldest first. */
+    events,
     get broadcasts() {
       return broadcasts;
     },

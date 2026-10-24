@@ -64,6 +64,12 @@ Working:
   Worm names are politicians (`HEROES`/`VILLAINS` in the server module).
   Fixed: fused bombs passed through worms; bombs stuck instead of rolling; a hidden
   170px walk budget plus a too-strict slope check made walking stop.
+- Artillery round 2 (2026-10-24): 3s retreat after firing (server keeps the shot's
+  snapshot + seed and re-simulates with `Sim.inputs`; clients get
+  `{type:'timeline', replace:true}`), sudden death (rising `s.water`, host picks
+  4/8/12 rounds or off), parachute crates (`s.crates`, health or limited weapon,
+  explode/sink/fall), team health panel, on-screen keybinds, speech-bubble quips,
+  Swedish politicians with party tags. Between-turn events run in `betweenTurns()`.
 - Hay, Where? (geoguess): Wikimedia Commons photos, Leaflet + OSM map, rounds
   3/5/10, 30/60/90s, 15s rush after the first lock-in, speed bonus, reveal map
   with all pins, auto-advance, host skip/next/end, click-to-zoom photo, phone layout
@@ -74,9 +80,9 @@ Not set up: production hosting.
 ## Next steps
 
 Known gaps (artillery):
-1. No retreat time after firing (classic Worms gives ~3s to run).
-2. Late joiners can only spectate an artillery match in progress.
-3. No in-match team list showing who is out / offline.
+1. Late joiners can only spectate an artillery match in progress.
+2. Retreat moves show up after a round trip to the server, so they feel slightly
+   laggy on slow connections (no client-side prediction).
 
 Hay, Where? ideas:
 - Region packs (only Europe / only Asia / a country) via Commons search terms.
@@ -87,8 +93,6 @@ Hay, Where? ideas:
 - The tile proxy is open to anyone who finds it; rate-limit it before going public.
 
 Features worth adding:
-- Sudden death (rising water after N turns) so matches end.
-- Health/weapon crates dropped between turns.
 - Trajectory preview for the first few turns or as a practice-mode option.
 - Session scoreboard for artillery (like tic-tac-toe's win counts).
 - Craters that cut into a cave get the cave back wall when a client rebuilds the

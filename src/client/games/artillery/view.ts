@@ -1,10 +1,11 @@
-import { clearSpot, SAMPLE, FPS, WORM_R } from '../../../shared/artillery/sim.ts';
+import { clearSpot, FLOOD_FRAMES, SAMPLE, FPS, WORM_R } from '../../../shared/artillery/sim.ts';
 import { H, mapInfo, SHAPE_NAMES, Terrain, THEME_NAMES, W, WATER_Y, type ThemeId } from '../../../shared/artillery/terrain.ts';
-import { WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Crater, type ProjKind, type SimEvent, type Timeline, type Track, type WeaponId } from '../../../shared/artillery/types.ts';
+import { partyOf, QUIPS, SWEDISH } from '../../../shared/artillery/politicians.ts';
+import { CRATE_HEALTH, RETREAT_SECONDS, WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Crate, type Crater, type ProjKind, type SimEvent, type Timeline, type Track, type WeaponId } from '../../../shared/artillery/types.ts';
 import type { Player, RoomView } from '../../../shared/protocol.ts';
 import { audio, type Sound } from '../../audio.ts';
 import { esc, toast, type ViewFactory } from '../../ui.ts';
-import { buildBackdrop, buildTerrainCanvas, carveCanvas, drawBird, drawCloud, drawGrave, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles } from './render.ts';
+import { buildBackdrop, buildTerrainCanvas, carveCanvas, drawBird, drawBubble, drawCloud, drawCrate, drawGrave, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles } from './render.ts';
 
 type Playback = {
   tl: Timeline;
@@ -13,8 +14,41 @@ type Playback = {
   hp: Map<number, number>;
   alive: Map<number, boolean>;
   wormTracks: Map<number, Track[]>;
+  crateTracks: Map<number, Track[]>;
+  gone: Set<number>; // crates picked up, destroyed or sunk so far
+  flood: { from: number; to: number; f0: number } | null;
+  lastF: number; // last frame played, so a replacement timeline can pick up from there
   fx: Set<string>; // one-off effects already played (fuse ticks, whistles…)
 };
+
+const tracksBy = (tl: Timeline, kind: 'worm' | 'crate') => {
+  const m = new Map<number, Track[]>();
+  for (const tr of tl.tracks) {
+    if (tr.kind !== kind) continue;
+    const id = kind === 'worm' ? tr.wormId! : tr.crateId!;
+    const list = m.get(id) ?? [];
+    list.push(tr);
+    m.set(id, list);
+  }
+  return m;
+};
+/** The newest track that has started by frame f. */
+const latest = (trs: Track[] | undefined, f: number) => {
+  let best: Track | null = null;
+  for (const tr of trs ?? []) if (tr.start <= f) best = tr;
+  return best;
+};
+
+const KEYS: [string[], string][] = [
+  [['←', '→'], 'Walk (A/D)'],
+  [['J'], 'Jump'],
+  [['↑', '↓'], 'Aim (W/S)'],
+  [['Q', 'E'], 'Power'],
+  [['Space'], 'Fire'],
+  [['1', '–', '7'], 'Weapon'],
+  [['Drag'], 'Aim by mouse'],
+  [['H'], 'Hide this'],
+];
 
 type Floater = { x: number; y: number; text: string; color: string; life: number; size: number; comic?: boolean; rot?: number; max?: number };
 
@@ -44,7 +78,18 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         <div class="art-wind" title="Wind"><span class="wind-arrow"></span><div class="wind-bar"><div class="wind-fill"></div></div></div>
         <button class="btn ghost small art-surrender" data-surrender hidden title="Give up this match">🏳️ Surrender</button>
       </div>
-      <div class="art-stage"><canvas></canvas><div class="art-overlay" hidden></div></div>
+      <div class="art-stage">
+        <canvas></canvas>
+        <div class="art-teams" hidden></div>
+        <div class="art-keys">
+          <button class="keys-toggle" data-keys title="Keyboard controls (H)">⌨️ Controls</button>
+          <div class="keys-list">
+            ${KEYS.map(([ks, what]) => `<div class="krow"><span class="kk">${ks.map((k) => (k === '–' ? '–' : `<kbd>${k}</kbd>`)).join('')}</span><span>${what}</span></div>`).join('')}
+            <p class="kfoot">${RETREAT_SECONDS}s to run after firing!</p>
+          </div>
+        </div>
+        <div class="art-overlay" hidden></div>
+      </div>
       <div class="art-bar">
         <div class="weapons"></div>
         <div class="controls">
@@ -70,6 +115,23 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   const barEl = $('.art-bar');
   const hintEl = $('.art-hint');
   const surrenderBtn = $('.art-surrender');
+  const teamsEl = $('.art-teams');
+  const keysEl = $('.art-keys');
+  const KEYS_PREF = 'hgn-art-keys';
+  const setKeysOpen = (open: boolean) => {
+    keysEl.classList.toggle('open', open);
+    try {
+      localStorage.setItem(KEYS_PREF, open ? '1' : '0');
+    } catch {}
+  };
+  {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(KEYS_PREF);
+    } catch {}
+    // Open by default with a mouse, closed on touch screens.
+    keysEl.classList.toggle('open', saved ? saved === '1' : !matchMedia('(pointer: coarse)').matches);
+  }
   let surrenderArmed = 0; // tap twice to surrender, so a stray tap doesn't end your match
 
   let room: RoomView | null = null;
@@ -97,6 +159,10 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   let flash = 0;
   const hurtAt = new Map<number, number>();
   const landAt = new Map<number, number>();
+  const bubbles = new Map<number, { text: string; t0: number }>();
+  let retreat: { wormId: number; until: number } | null = null;
+  let retreatShown = false;
+  let lastDir: 1 | -1 = 1;
 
   let pb: Playback | null = null;
   const parts = new Particles();
@@ -125,6 +191,13 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   const myTeamIdx = () => (s ? s.teams.findIndex((t) => t.playerId === me?.id) : -1);
   const myTurn = () => !!s && s.phase === 'aiming' && !!s.turn && s.teams[s.turn.team]?.playerId === me?.id;
   const canAct = () => myTurn() && !pb;
+  const serverNow = () => Date.now() + clockOffset;
+  /** Did I just fire, and can I still run? */
+  const canRetreat = () => {
+    if (!retreat || !pb || !s || serverNow() >= retreat.until) return false;
+    const w = wormById(retreat.wormId);
+    return !!w && s.teams[w.team]?.playerId === me?.id && pb.alive.get(w.id) !== false;
+  };
   const panFor = (x: number) => ((x / W) * 2 - 1) * 0.75;
   const sfx = (name: Sound, x?: number, gain?: number) => audio.play(name, { pan: x === undefined ? 0 : panFor(x), gain });
   const wormById = (id: number) => s?.worms.find((w) => w.id === id);
@@ -217,6 +290,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         sfx('turn');
       }
       lastTick = -1;
+      const wid = s.turn!.wormId;
+      setTimeout(() => s?.turn?.wormId === wid && quip(wid, 'turn'), 500);
     }
     if (s.phase === 'over' && prev && prev.phase !== 'over') {
       const mine = myTeamIdx();
@@ -231,24 +306,40 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   function startPlayback(tl: Timeline) {
     // Finish any playback still running so craters stay in order.
     if (pb) finishPlayback();
-    const wormTracks = new Map<number, Track[]>();
-    for (const tr of tl.tracks) {
-      if (tr.kind !== 'worm') continue;
-      const list = wormTracks.get(tr.wormId!) ?? [];
-      list.push(tr);
-      wormTracks.set(tr.wormId!, list);
-    }
     pb = {
       tl,
       t0: performance.now(),
       ev: 0,
       hp: new Map(tl.before.map((w) => [w.id, w.hp])),
       alive: new Map(tl.before.map((w) => [w.id, w.alive])),
-      wormTracks,
+      wormTracks: tracksBy(tl, 'worm'),
+      crateTracks: tracksBy(tl, 'crate'),
+      gone: new Set(),
+      flood: null,
+      lastF: 0,
       fx: new Set(),
     };
     pointerAiming = false;
     renderHud();
+  }
+
+  /**
+   * The shooter moved during the retreat, so the server re-ran the shot. The new
+   * timeline matches the old one up to the move, so keep the clock and just
+   * redo the bookkeeping (HP, crates, craters) up to where we are.
+   */
+  function replacePlayback(tl: Timeline) {
+    if (!pb) return startPlayback(tl);
+    const p = pb;
+    p.tl = tl;
+    p.wormTracks = tracksBy(tl, 'worm');
+    p.crateTracks = tracksBy(tl, 'crate');
+    p.hp = new Map(tl.before.map((w) => [w.id, w.hp]));
+    p.alive = new Map(tl.before.map((w) => [w.id, w.alive]));
+    p.gone = new Set();
+    p.flood = null;
+    p.ev = 0;
+    while (p.ev < tl.events.length && tl.events[p.ev].f <= p.lastF) book(tl.events[p.ev++]);
   }
 
   function finishPlayback() {
@@ -263,6 +354,60 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     } else renderHud();
   }
 
+  /** State changes from an event, without the effects (so a replacement timeline can replay them). */
+  function book(e: SimEvent) {
+    const p = pb!;
+    switch (e.type) {
+      case 'explode':
+        if (e.crater === applied) applyCrater([e.x, e.y, e.r!]);
+        break;
+      case 'damage':
+        p.hp.set(e.wormId!, Math.max(0, (p.hp.get(e.wormId!) ?? 0) - e.amount!));
+        break;
+      case 'pickup':
+        p.gone.add(e.crateId!);
+        if (e.kind === 'health') p.hp.set(e.wormId!, (p.hp.get(e.wormId!) ?? 0) + (e.amount ?? 0));
+        break;
+      case 'crate':
+        if (e.kind === 'destroy' || e.kind === 'sink') p.gone.add(e.crateId!);
+        break;
+      case 'die':
+        p.alive.set(e.wormId!, false);
+        break;
+      case 'flood':
+        p.flood = { from: e.amount!, to: e.y, f0: e.f };
+        break;
+    }
+  }
+
+  /** Current water level: animating during a flood, otherwise from the state. */
+  function waterAt(f: number) {
+    const fl = pb?.flood;
+    if (fl) return fl.from + (fl.to - fl.from) * Math.min(1, Math.max(0, (f - fl.f0) / FLOOD_FRAMES));
+    return s?.water ?? WATER_Y;
+  }
+
+  // ---------- speech bubbles ----------
+  function say(wormId: number, text: string) {
+    bubbles.set(wormId, { text, t0: performance.now() });
+  }
+  function quip(wormId: number, kind: 'turn' | 'hurt' | 'fire' | 'pickupHealth' | 'pickupWeapon') {
+    const w = wormById(wormId);
+    if (!w) return;
+    const sv = w.name in SWEDISH;
+    const list = sv && kind === 'turn' ? QUIPS.svTurn : sv && kind === 'hurt' ? QUIPS.svHurt : QUIPS[kind];
+    say(wormId, pick(list));
+  }
+
+  function crateFx(c: { x: number; y: number }, wormId: number, kind: string | undefined) {
+    const health = kind === 'health';
+    parts.sparkle(c.x, c.y);
+    sfx(health ? 'heal' : 'pickup', c.x);
+    const wp = !health && kind && kind in WEAPON_BY_ID ? WEAPON_BY_ID[kind as WeaponId] : null;
+    floaters.push({ x: c.x, y: c.y - 16, text: health ? `+${CRATE_HEALTH}` : `+1 ${wp?.icon ?? ''} ${wp?.name ?? 'weapon'}`, color: health ? '#7cf29a' : '#ffe14d', life: 0, size: 16, rot: 0 });
+    quip(wormId, health ? 'pickupHealth' : 'pickupWeapon');
+  }
+
   const nowF = () => ((performance.now() - pb!.t0) / 1000) * FPS;
 
   function comic(x: number, y: number, text: string, size: number, color = '#ffe14d') {
@@ -271,6 +416,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
 
   function handleEvent(e: SimEvent) {
     const p = pb!;
+    book(e);
     switch (e.type) {
       case 'fire': {
         const shooter = s?.turn ? wormPos(s.turn.wormId, nowF()) : [e.x, e.y];
@@ -285,7 +431,6 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       }
       case 'explode': {
         const r = e.r!;
-        if (e.crater === applied) applyCrater([e.x, e.y, r]);
         parts.explosion(e.x, e.y, r);
         shake = Math.min(22, shake + r / 3);
         if (r >= 60) flash = 0.7;
@@ -315,16 +460,39 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         sfx('splash', e.x);
         break;
       case 'damage': {
-        p.hp.set(e.wormId!, Math.max(0, (p.hp.get(e.wormId!) ?? 0) - e.amount!));
         const w = wormById(e.wormId!);
         const [x, y] = wormPos(e.wormId!, nowF());
         floaters.push({ x, y: y - 20, text: `-${e.amount}`, color: w ? s!.teams[w.team].color : '#fff', life: 0, size: 18, rot: 0 });
         hurtAt.set(e.wormId!, performance.now());
         sfx('hurt', x, 0.9);
+        if ((p.hp.get(e.wormId!) ?? 0) > 0 && Math.random() < 0.45) quip(e.wormId!, 'hurt');
+        renderTeams();
         break;
       }
+      case 'pickup':
+        crateFx(e, e.wormId!, e.kind);
+        renderTeams();
+        break;
+      case 'crate':
+        if (e.kind === 'drop') sfx('parachute', e.x);
+        else if (e.kind === 'land') {
+          parts.dust(e.x, e.y + 8, 5, 0.8);
+          sfx('crateLand', e.x);
+        } else if (e.kind === 'destroy') {
+          parts.confetti(e.x, e.y, ['#c68a4a', '#7a4e24', '#ffffff'], 12);
+          sfx('pop', e.x);
+        }
+        break;
+      case 'flood':
+        if (e.amount === WATER_Y) {
+          banner = { text: 'SUDDEN DEATH!', sub: 'The water is rising', t0: performance.now() };
+          sfx('alarm');
+        }
+        sfx('flood', W / 2);
+        break;
       case 'die': {
-        p.alive.set(e.wormId!, false);
+        bubbles.delete(e.wormId!);
+        renderTeams();
         const w = wormById(e.wormId!);
         const name = w?.name ?? 'Someone';
         if (e.kind === 'drown') {
@@ -332,7 +500,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
           parts.bubbles(e.x, e.y);
           sfx('slide', e.x);
           setTimeout(() => sfx('bubbles', e.x), 700);
-          comic(e.x, WATER_Y - 40, `${name} ${pick(DROWN_LINES)}`, 15, '#ffffff');
+          comic(e.x, e.y - 40, `${name} ${pick(DROWN_LINES)}`, 15, '#ffffff');
         } else {
           parts.explosion(e.x, e.y, 12);
           parts.confetti(e.x, e.y, w ? [s!.teams[w.team].color, '#fff', '#ffe14d'] : ['#fff']);
@@ -375,6 +543,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
 
   function stepPlayback(f: number) {
     const p = pb!;
+    p.lastF = f;
     while (p.ev < p.tl.events.length && p.tl.events[p.ev].f <= f) handleEvent(p.tl.events[p.ev++]);
 
     for (const tr of p.tl.tracks) {
@@ -442,13 +611,51 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     surrenderBtn.textContent = surrenderArmed ? 'Tap again to give up' : '🏳️ Surrender';
 
     const active = canAct();
-    barEl.classList.toggle('inactive', !active);
+    const running = canRetreat();
+    barEl.classList.toggle('inactive', !active && !running);
+    barEl.classList.toggle('retreat', running);
     const wp = WEAPON_BY_ID[weapon];
-    hintEl.textContent = active
-      ? `${wp.icon} ${wp.name}: ${wp.hint}  ·  ${wp.aim === 'target' ? 'Tap the map to target' : 'Drag to aim (distance = power)'} · Space fire · ←/→ walk · J jump · W/S angle · Q/E power`
-      : s.phase === 'aiming' && team && !myTurn()
-        ? `Watching ${team.name}…`
-        : '';
+    hintEl.textContent = running
+      ? '🏃 Run for cover! Walk or jump before your shot lands.'
+      : active
+        ? `${wp.icon} ${wp.name}: ${wp.hint}  ·  ${wp.aim === 'target' ? 'Tap the map to target' : 'Drag to aim (distance = power)'}`
+        : s.phase === 'aiming' && team && !myTurn()
+          ? `Watching ${team.name}…`
+          : '';
+    keysEl.hidden = !inMatch;
+    renderTeams();
+  }
+
+  /** The little scoreboard in the corner: each team's health, worms left, and who's away. */
+  function renderTeams() {
+    if (!s || !room || (s.phase !== 'aiming' && s.phase !== 'resolving')) {
+      teamsEl.hidden = true;
+      return;
+    }
+    teamsEl.hidden = false;
+    const online = new Set(room.players.map((p) => p.id));
+    const hpOf = (id: number, hp: number) => (pb ? pb.hp.get(id) ?? hp : hp);
+    const aliveOf = (id: number, alive: boolean) => (pb ? pb.alive.get(id) ?? alive : alive);
+    const maxHp = s.wormsPerTeam * 100;
+    const rows = s.teams.map((t, i) => {
+      const worms = s!.worms.filter((w) => w.team === i);
+      const living = worms.filter((w) => aliveOf(w.id, w.alive));
+      const hp = living.reduce((sum, w) => sum + hpOf(w.id, w.hp), 0);
+      const status = t.out === 'surrendered' ? '🏳️' : t.out === 'left' ? '🚪' : !living.length ? '💀' : !online.has(t.playerId) ? '📴' : '';
+      const cur = s!.turn?.team === i;
+      const cls = [cur ? 'cur' : '', t.playerId === me?.id ? 'me' : '', !living.length ? 'dead' : ''].join(' ');
+      return `<div class="trow ${cls}" title="${esc(t.name)}: ${hp} HP, ${living.length} of ${worms.length} worms left">
+        <i class="dot" style="background:${t.color}"></i><span class="tname">${esc(t.name)}</span>
+        <span class="hpbar"><b style="width:${Math.min(100, (hp / maxHp) * 100)}%;background:${t.color}"></b></span>
+        <span class="tinfo">${status || `${living.length}×`}</span></div>`;
+    });
+    let sd = '';
+    if (s.sdTurn && s.turn) {
+      const left = s.sdTurn - s.turn.no + 1;
+      sd = `<div class="sd ${left <= 1 ? 'hot' : ''}">🌊 ${left <= 0 ? 'Sudden death!' : left === 1 ? 'Flood after this turn' : `Flood in ${left} turns`}</div>`;
+    }
+    const html = sd + rows.join('');
+    if (teamsEl.innerHTML !== html) teamsEl.innerHTML = html;
   }
 
   function renderOverlay() {
@@ -470,9 +677,11 @@ export const createArtilleryView: ViewFactory = (root, send) => {
               ? `<div class="settings">
                   <label>Worms each ${[1, 2, 3, 4].map((n) => `<button class="chip ${s!.wormsPerTeam === n ? 'on' : ''}" data-art="wpt:${n}">${n}</button>`).join('')}</label>
                   <label>Turn time ${[30, 45, 60].map((n) => `<button class="chip ${s!.turnSeconds === n ? 'on' : ''}" data-art="secs:${n}">${n}s</button>`).join('')}</label>
+                  <label>Crates ${[true, false].map((on) => `<button class="chip ${s!.cratesOn === on ? 'on' : ''}" data-art="crates:${on ? 1 : 0}">${on ? 'On' : 'Off'}</button>`).join('')}</label>
+                  <label title="After this many rounds the water starts rising every turn">Sudden death ${[0, 4, 8, 12].map((n) => `<button class="chip ${s!.suddenDeath === n ? 'on' : ''}" data-art="sd:${n}">${n ? `${n} rounds` : 'Off'}</button>`).join('')}</label>
                 </div>
                 <button class="btn start" data-art="start" ${s.teams.length ? '' : 'disabled'}>${s.teams.length === 1 ? 'Start solo practice' : 'Start match'}</button>`
-              : `<p class="muted">Worms each: ${s.wormsPerTeam} · Turn time: ${s.turnSeconds}s<br>Waiting for the host to start…</p>`
+              : `<p class="muted">Worms each: ${s.wormsPerTeam} · Turn time: ${s.turnSeconds}s · Crates: ${s.cratesOn ? 'on' : 'off'} · Sudden death: ${s.suddenDeath ? `after ${s.suddenDeath} rounds` : 'off'}<br>Waiting for the host to start…</p>`
           }
         </div>`;
     } else if (s.phase === 'over') {
@@ -539,6 +748,11 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     send({ a: 'fire', weapon, angle: aim.angle, power: aim.power, tx: target?.x, ty: target?.y });
   }
 
+  function jump() {
+    if (canAct()) send({ a: 'jump' });
+    else if (canRetreat()) send({ a: 'jump', dir: lastDir });
+  }
+
   function selectWeapon(id: WeaponId) {
     if (!s) return;
     const mine = myTeamIdx();
@@ -551,8 +765,9 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   }
 
   root.addEventListener('click', (e) => {
-    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-art],[data-weapon],[data-fire],[data-jump],[data-surrender]');
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-art],[data-weapon],[data-fire],[data-jump],[data-surrender],[data-keys]');
     if (!el) return;
+    if (el.dataset.keys !== undefined) return setKeysOpen(!keysEl.classList.contains('open'));
     if (el.dataset.surrender !== undefined) {
       if (Date.now() - surrenderArmed < 3000) {
         surrenderArmed = 0;
@@ -570,11 +785,13 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     }
     if (el.dataset.weapon) return selectWeapon(el.dataset.weapon as WeaponId);
     if (el.dataset.fire !== undefined) return fire();
-    if (el.dataset.jump !== undefined) return canAct() && send({ a: 'jump' });
+    if (el.dataset.jump !== undefined) return jump();
     const cmd = el.dataset.art!;
     sfx('click');
     if (cmd.startsWith('wpt:')) send({ a: 'settings', wormsPerTeam: Number(cmd.slice(4)) });
     else if (cmd.startsWith('secs:')) send({ a: 'settings', turnSeconds: Number(cmd.slice(5)) });
+    else if (cmd.startsWith('crates:')) send({ a: 'settings', crates: cmd.endsWith('1') });
+    else if (cmd.startsWith('sd:')) send({ a: 'settings', suddenDeath: Number(cmd.slice(3)) });
     else send({ a: cmd });
   });
 
@@ -600,7 +817,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (e.repeat) return;
     keys.add(k);
     if (k === ' ' || k === 'Enter') fire();
-    else if (k === 'j' && canAct()) send({ a: 'jump' });
+    else if (k === 'j') jump();
+    else if (k === 'h' || k === '?') setKeysOpen(!keysEl.classList.contains('open'));
     else if (/^[1-7]$/.test(k)) selectWeapon(WEAPONS[Number(k) - 1].id);
   };
   const onKeyUp = (e: KeyboardEvent) => {
@@ -617,11 +835,23 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   window.addEventListener('blur', onBlur);
 
   function processInput(dt: number, now: number) {
-    if (!canAct()) return;
+    const running = canRetreat();
+    if (!canAct() && !running) return;
     const kdir = (keys.has('ArrowRight') || keys.has('d') ? 1 : 0) - (keys.has('ArrowLeft') || keys.has('a') ? 1 : 0);
     const dir = (walkBtn || kdir) as 0 | 1 | -1;
+    if (running) {
+      // Running from your own shot: walking only, no aiming.
+      if (dir && now - lastWalk > 50) {
+        lastWalk = now;
+        lastDir = dir;
+        send({ a: 'walk', dir });
+        if (++walkCount % 3 === 0) sfx('step', wormPos(retreat!.wormId, nowF())[0]);
+      }
+      return;
+    }
     if (dir && now - lastWalk > 50) {
       lastWalk = now;
+      lastDir = dir;
       send({ a: 'walk', dir });
       // Turning around mirrors the aim.
       if (facingOf(aim.angle) !== dir) aim.angle = normAngle(Math.PI - aim.angle);
@@ -664,6 +894,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (pb) {
       for (const tr of pb.tl.tracks) if (tr.kind !== 'worm' && f >= tr.start && f < tr.end) return posAt(tr, f);
       for (const tr of pb.tl.tracks) if (tr.kind === 'worm' && f >= tr.start && f < tr.end) return posAt(tr, f);
+      // Shot has landed but the shooter is still running: watch them.
+      if (retreat && serverNow() < retreat.until && pb.alive.get(retreat.wormId) !== false) return wormPos(retreat.wormId, f);
       const ex = [...pb.tl.events].reverse().find((e) => e.f <= f && e.type === 'explode');
       if (ex) return [ex.x, ex.y];
     }
@@ -722,9 +954,10 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     ctx.drawImage(backdrop, 0, 0);
     if (terrainCanvas) ctx.drawImage(terrainCanvas, 0, 0);
 
-    const labels: { x: number; y: number; name: string; hp: number; color: string }[] = [];
+    const labels: { id: number; x: number; y: number; name: string; hp: number; color: string }[] = [];
     if (s && s.phase !== 'lobby') {
       const focus = focusPoint(f);
+      drawCrates(f, time);
       // Worms (and graves)
       for (const w of s.worms) {
         const alive = pb ? pb.alive.get(w.id) ?? w.alive : w.alive;
@@ -770,7 +1003,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
           id: w.id, name: w.name, color: team.color, facing, time, active, walking, hp, look, stretch,
           hurtAgo: hurt === undefined ? 99 : (now - hurt) / 1000,
         });
-        labels.push({ x, y, name: w.name, hp, color: team.color });
+        labels.push({ id: w.id, x, y, name: w.name, hp, color: team.color });
 
         if (active && !pb) {
           // Bouncing marker
@@ -805,16 +1038,24 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     }
 
     parts.draw(ctx);
-    drawWater(ctx, time, (ch - oy) / scale + 10, pal);
+    const level = waterAt(f);
+    parts.water = level;
+    drawWater(ctx, time, (ch - oy) / scale + 10, pal, level);
     if (pal.weather === 'snow') drawSnow(dt, time);
 
     // Screen-space text so it stays crisp at any zoom.
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = 'center';
     ctx.lineJoin = 'round';
+    // Worms standing close together would have their labels on top of each
+    // other, so stack the later ones upwards.
+    const placed: { x: number; y: number }[] = [];
+    labels.sort((a, b) => b.y - a.y);
     for (const l of labels) {
       const lx = ox + l.x * scale;
-      const ly = oy + (l.y - WORM_R) * scale - 10;
+      let ly = oy + (l.y - WORM_R) * scale - 10;
+      for (let k = 0; k < 4 && placed.some((p) => Math.abs(p.x - lx) < 58 && Math.abs(p.y - ly) < 26); k++) ly -= 26;
+      placed.push({ x: lx, y: ly });
       ctx.font = '800 11px system-ui, sans-serif';
       const hpText = `${l.hp}`;
       const bw = ctx.measureText(hpText).width + 8;
@@ -831,9 +1072,29 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'rgba(26,19,37,0.85)';
       ctx.fillStyle = '#fff';
-      ctx.strokeText(l.name, lx, ly - 14);
-      ctx.fillText(l.name, lx, ly - 14);
+      const party = partyOf(l.name);
+      // Swedish politicians get a little party tag after their name.
+      const tag = party ? SWEDISH[l.name] : '';
+      const nameW = ctx.measureText(l.name).width;
+      const tagW = tag ? ctx.measureText(tag).width + 6 : 0;
+      const nx = lx - (tag ? (tagW + 3) / 2 : 0);
+      ctx.strokeText(l.name, nx, ly - 14);
+      ctx.fillText(l.name, nx, ly - 14);
+      if (party) {
+        const tx = nx + nameW / 2 + 3;
+        ctx.fillStyle = party.color;
+        ctx.strokeStyle = 'rgba(26,19,37,0.85)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.roundRect(tx, ly - 23, tagW, 12, 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = party.text;
+        ctx.fillText(tag, tx + tagW / 2, ly - 14);
+      }
+      l.y = ly - 26; // bubbles go above the name (screen space from here on)
     }
+    drawBubbles(labels, now);
     for (let i = floaters.length - 1; i >= 0; i--) {
       const fl = floaters[i];
       fl.life += dt;
@@ -867,6 +1128,35 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (banner) drawBanner(now, cw, ch);
 
     updateTimer();
+  }
+
+  function drawCrates(f: number, time: number) {
+    const list: Crate[] = pb ? pb.tl.crates.filter((c) => f >= c.from && !pb!.gone.has(c.id)) : s!.crates;
+    for (const c of list) {
+      let x = c.x;
+      let y = c.y;
+      let para = false;
+      const tr = pb ? latest(pb.crateTracks.get(c.id), f) : null;
+      if (tr) {
+        [x, y] = posAt(tr, f);
+        para = !!tr.para && f < tr.end;
+      }
+      drawCrate(ctx, x, y, c.kind, time, para);
+    }
+  }
+
+  function drawBubbles(labels: { id: number; x: number; y: number }[], now: number) {
+    const { scale, ox } = view;
+    for (const [id, b] of bubbles) {
+      const t = (now - b.t0) / 1000;
+      const l = labels.find((x) => x.id === id);
+      if (t > 2.4 || !l) {
+        if (t > 2.4) bubbles.delete(id);
+        continue;
+      }
+      const pop = t < 0.12 ? 0.5 + (t / 0.12) * 0.6 : t < 0.22 ? 1.1 - ((t - 0.12) / 0.1) * 0.1 : 1;
+      drawBubble(ctx, ox + l.x * scale, l.y, b.text, Math.min(1, (2.4 - t) * 4), pop);
+    }
   }
 
   /** "Frosty Peaks · Twin Isles" title card at the start of a match. */
@@ -1000,20 +1290,34 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   }
 
   function updateTimer() {
-    if (!s || s.phase !== 'aiming' || !s.turn || pb) {
-      if (timerEl.textContent) timerEl.textContent = '';
-      return;
+    const runLeft = retreat ? (retreat.until - serverNow()) / 1000 : 0;
+    if (retreat && runLeft <= 0) {
+      retreat = null;
+      renderHud();
     }
-    const left = Math.max(0, Math.ceil((s.turn.endsAt - (Date.now() + clockOffset)) / 1000));
-    const text = String(left);
-    if (timerEl.textContent !== text) {
-      timerEl.textContent = text;
-      timerEl.classList.toggle('urgent', left <= 5);
+    // Show the bar as active the moment my retreat starts, and inactive when it ends.
+    const running = canRetreat();
+    if (running !== retreatShown) {
+      retreatShown = running;
+      renderHud();
+    }
+    let text = '';
+    let mode = '';
+    if (retreat && runLeft > 0) {
+      text = `🏃 ${Math.ceil(runLeft)}`;
+      mode = 'retreat';
+    } else if (s && s.phase === 'aiming' && s.turn && !pb) {
+      const left = Math.max(0, Math.ceil((s.turn.endsAt - serverNow()) / 1000));
+      text = String(left);
+      mode = left <= 5 ? 'urgent' : '';
       if (left <= 5 && left > 0 && left !== lastTick && myTurn()) {
         lastTick = left;
         audio.play('tick', { pitch: left <= 2 ? 1.3 : 1 });
       }
     }
+    if (timerEl.textContent !== text) timerEl.textContent = text;
+    timerEl.classList.toggle('urgent', mode === 'urgent');
+    timerEl.classList.toggle('retreat', mode === 'retreat');
   }
 
   raf = requestAnimationFrame(frame);
@@ -1034,7 +1338,25 @@ export const createArtilleryView: ViewFactory = (root, send) => {
 
     event(raw) {
       const e = raw as ArtEvent;
-      if (e.type === 'timeline') startPlayback(e.tl);
+      if (e.type === 'timeline') {
+        if (e.replace) replacePlayback(e.tl);
+        else {
+          startPlayback(e.tl);
+          if (e.retreat) {
+            // Fresh shot: the shooter might shout something, and gets a "run!" cue.
+            if (Math.random() < 0.35) quip(e.retreat.wormId, 'fire');
+            const w = wormById(e.retreat.wormId);
+            if (w && s!.teams[w.team]?.playerId === me?.id) setTimeout(() => sfx('retreat'), 350);
+          }
+        }
+        retreat = e.retreat ?? null;
+        renderHud();
+      } else if (e.type === 'pickup') {
+        if (s && !pb) {
+          s.crates = s.crates.filter((c) => c.id !== e.crate.id);
+          crateFx(e, e.wormId, e.crate.kind === 'health' ? 'health' : e.crate.weapon);
+        }
+      }
       else if (e.type === 'walk') {
         const w = wormById(e.wormId);
         if (w && !pb) {

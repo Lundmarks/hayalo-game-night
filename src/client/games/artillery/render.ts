@@ -1,5 +1,6 @@
 import { WORM_R } from '../../../shared/artillery/sim.ts';
 import { H, MAT, Terrain, W, WATER_Y, type ThemeId } from '../../../shared/artillery/terrain.ts';
+import { partyOf } from '../../../shared/artillery/politicians.ts';
 import type { ProjKind } from '../../../shared/artillery/types.ts';
 
 const hash = (x: number, y: number) => {
@@ -469,8 +470,8 @@ export function drawBird(ctx: CanvasRenderingContext2D, x: number, y: number, ti
   ctx.lineCap = 'butt';
 }
 
-export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: number, pal: Palette) {
-  const wave = (x: number, t: number) => WATER_Y + Math.sin(x / 40 + t * 2) * 3 + Math.sin(x / 17 - t * 3) * 1.5;
+export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: number, pal: Palette, level = WATER_Y) {
+  const wave = (x: number, t: number) => level + Math.sin(x / 40 + t * 2) * 3 + Math.sin(x / 17 - t * 3) * 1.5;
   // A darker wave behind for depth.
   ctx.fillStyle = pal.water[1];
   ctx.globalAlpha = 0.6;
@@ -481,7 +482,7 @@ export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: n
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  const g = ctx.createLinearGradient(0, WATER_Y, 0, bottom);
+  const g = ctx.createLinearGradient(0, level, 0, Math.max(level + 40, bottom));
   g.addColorStop(0, pal.water[0]);
   g.addColorStop(1, pal.water[1]);
   ctx.fillStyle = g;
@@ -507,7 +508,7 @@ export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: n
   ctx.beginPath();
   for (let i = 0; i < 14; i++) {
     const gx = ((hash(i, 5) * W + time * 12 * (i % 2 ? 1 : -1)) % (W + 100)) - 50;
-    const gy = WATER_Y + 10 + hash(i, 6) * 22;
+    const gy = level + 10 + hash(i, 6) * 22;
     ctx.moveTo(gx, gy);
     ctx.lineTo(gx + 8 + hash(i, 7) * 10, gy);
   }
@@ -685,6 +686,128 @@ export function drawWorm(ctx: CanvasRenderingContext2D, x: number, y: number, o:
   }
 
   drawLook(ctx, look);
+
+  // Swedish politicians wear their party's pin.
+  const party = partyOf(o.name);
+  if (party) {
+    ctx.fillStyle = party.color;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(-1.5, 5.2, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.beginPath();
+    ctx.arc(-2.3, 4.4, 0.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Wooden crate (or white first-aid box), on a parachute while it floats down. */
+export function drawCrate(ctx: CanvasRenderingContext2D, x: number, y: number, kind: 'health' | 'weapon', time: number, para: boolean) {
+  ctx.save();
+  ctx.translate(x, y);
+  if (para) {
+    // Sway under the canopy.
+    const sway = Math.sin(time * 2.2) * 0.12;
+    ctx.rotate(sway);
+    ctx.strokeStyle = 'rgba(43,29,51,0.7)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(-7, -7);
+    ctx.lineTo(-15, -26);
+    ctx.moveTo(7, -7);
+    ctx.lineTo(15, -26);
+    ctx.moveTo(0, -8);
+    ctx.lineTo(0, -30);
+    ctx.stroke();
+    const stripes = ['#ff6b6b', '#ffffff', '#ff6b6b', '#ffffff'];
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = stripes[i];
+      ctx.beginPath();
+      ctx.moveTo(0, -27);
+      ctx.arc(0, -27, 18, Math.PI + (i * Math.PI) / 4, Math.PI + ((i + 1) * Math.PI) / 4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, -27, 18, Math.PI, 0);
+    ctx.quadraticCurveTo(9, -24, 0, -27);
+    ctx.quadraticCurveTo(-9, -24, -18, -27);
+    ctx.stroke();
+  }
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = INK;
+  if (kind === 'health') {
+    ctx.fillStyle = '#f8f8fb';
+    ctx.beginPath();
+    ctx.roundRect(-8, -8, 16, 16, 2.5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e8364f';
+    ctx.fillRect(-2, -5.5, 4, 11);
+    ctx.fillRect(-5.5, -2, 11, 4);
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.fillRect(-7, 4, 14, 3);
+  } else {
+    ctx.fillStyle = '#c68a4a';
+    ctx.beginPath();
+    ctx.roundRect(-8, -8, 16, 16, 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = '#7a4e24';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-8, -2.5);
+    ctx.lineTo(8, -2.5);
+    ctx.moveTo(-8, 2.5);
+    ctx.lineTo(8, 2.5);
+    ctx.moveTo(-6, -6);
+    ctx.lineTo(6, 6);
+    ctx.stroke();
+    ctx.fillStyle = '#ffe14d';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2.5;
+    ctx.font = '900 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeText('?', 0, 0.5);
+    ctx.fillText('?', 0, 0.5);
+  }
+  ctx.restore();
+}
+
+/** Comic speech bubble in screen space, its tail pointing down at (x, y). */
+export function drawBubble(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, alpha: number, pop: number) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(x, y);
+  ctx.scale(pop, pop);
+  ctx.font = '800 12px "Comic Sans MS", "Chalkboard SE", "Comic Neue", system-ui, sans-serif';
+  const w = Math.min(200, ctx.measureText(text).width) + 16;
+  const h = 22;
+  const bx = -w / 2;
+  const by = -h - 9;
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(bx, by, w, h, 10);
+  ctx.moveTo(-5, by + h);
+  ctx.lineTo(0, 0);
+  ctx.lineTo(5, by + h);
+  ctx.fill();
+  ctx.stroke();
+  // Cover the seam where the tail meets the bubble.
+  ctx.fillRect(-4, by + h - 2, 8, 3);
+  ctx.fillStyle = INK;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, by + h / 2 + 0.5, 200);
   ctx.restore();
 }
 
@@ -1001,6 +1124,7 @@ const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 export class Particles {
   list: Particle[] = [];
   debris = ['#9c663a', '#7ad64c'];
+  water = WATER_Y;
 
   private add(p: Omit<Particle, 'life'> & { life?: number }) {
     this.list.push({ life: 0, ...p });
@@ -1136,8 +1260,8 @@ export class Particles {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       if (p.spin) p.rot = (p.rot ?? 0) + p.spin * dt;
-      if (p.kind === 'drop' && p.y > WATER_Y + 4 && p.vy > 0) p.life = p.max;
-      if (p.kind === 'bubble' && p.y < WATER_Y) p.life = p.max;
+      if (p.kind === 'drop' && p.y > this.water + 4 && p.vy > 0) p.life = p.max;
+      if (p.kind === 'bubble' && p.y < this.water) p.life = p.max;
     }
     this.list = this.list.filter((p) => p.life < p.max && p.y < H + 100);
   }
