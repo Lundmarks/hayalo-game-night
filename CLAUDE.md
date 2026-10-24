@@ -79,33 +79,49 @@ is set once (no quick tunnel). The app already supports it: `npm run build` +
 Production only allows real Discord logins (no mock guests), so keep testing
 locally with `npm run dev`.
 
+### Chosen: Option A, the home server (this machine)
+
+This repo lives on the user's always-on home server (LAN IP 192.168.50.50), which
+already runs the Hayalo Behave bot (`~/projects/behave-bot`, Docker container
+`behave-bot-1`), the Tornknackarna scout bot and Syncthing in Docker, plus
+Pi-hole. The game runs next to them:
+
 ```
-Discord --https--> <name>.duckdns.org --> Caddy (HTTPS) --> npm start (port 3001)
+Discord --https--> <name>.duckdns.org --router 443->8443--> Caddy --> game container :3001
 ```
 
-Planned free setup:
-1. Oracle Cloud "Always Free" VM, Ubuntu, Ampere (ARM) shape (or the small free AMD
-   one if there's no capacity). Note the public IP.
-2. Free DuckDNS name (e.g. `hayalo.duckdns.org`) pointing at that IP.
-3. Open TCP 80 and 443 in both the Oracle security list and the VM's own
-   firewall (`sudo iptables -I INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT`
-   then `sudo netfilter-persistent save`). Missing one of the two is the usual
-   mistake.
-4. Install Node 22+, git and Caddy on the VM.
-5. `git clone` (deploy key if the repo is private), create `.env` by hand (never
-   commit it), `npm ci`, `npm run build`. `.env` must exist before the build: the
-   client ID is baked into the client bundle.
-6. A systemd service running `npm start` in the repo folder (restarts on crash and
-   reboot), and a Caddyfile: `<name>.duckdns.org { reverse_proxy localhost:3001 }`.
-   Caddy gets the certificate by itself.
-7. Developer Portal → Activities → URL Mappings: target `<name>.duckdns.org`, once.
+1. **Container:** a Dockerfile + `docker-compose.yml` for the game (like
+   behave-bot: `restart: unless-stopped`, `env_file: .env`). `.env` must exist
+   before the image is built: the client ID is baked into the client bundle.
+   Expose 3001 only on localhost.
+2. **Address:** a second DuckDNS name (e.g. `hayalo-gn.duckdns.org`). Add it to
+   the `domains=` list in `~/duckdns/duck.sh` (comma-separated); the existing cron
+   job (every 5 min) keeps it updated. Never print the token in that file.
+3. **HTTPS:** Caddy. **Pi-hole already uses ports 80 and 443 on this machine**, so
+   Caddy listens on 8080/8443 (`http_port 8080`, `https_port 8443` in the global
+   options) with `<name>.duckdns.org { reverse_proxy localhost:3001 }`. Don't
+   touch Pi-hole.
+4. **Router** (http://192.168.50.1, done by the user): forward external TCP 80 →
+   192.168.50.50:8080 and external TCP 443 → 192.168.50.50:8443, next to the
+   existing rule style (the old Minecraft rule was 25565 → 25565).
+5. **Discord:** Developer Portal → Activities → URL Mappings → target
+   `<name>.duckdns.org`, once.
 
-Updating: `git pull && npm ci && npm run build && sudo systemctl restart hayalo`.
-A restart ends matches in progress, so update between game nights.
+Updating: `git pull && docker compose up -d --build`. A restart ends matches in
+progress, so update between game nights. Don't change Pi-hole, the router, or
+the other containers without asking.
 
-Alternatives: Render.com free tier (deploys from GitHub, but sleeps after 15 min
-idle, slow first launch, a sleep ends the match). Or run it on whatever machine
-already hosts the Hayalo Discord bot, if that machine can accept inbound HTTPS.
+Downsides accepted: runs only while this machine is on (it already runs the bots
+24/7), uses home upload bandwidth (light), home IP reachable on 80/443.
+
+### Fallback: Option B, Oracle Cloud free VM
+
+If the home server stops being suitable: Oracle "Always Free" Ubuntu VM (Ampere
+shape), DuckDNS name to its IP, open TCP 80/443 in both the Oracle security list
+and the VM firewall (`iptables` + `netfilter-persistent save`), install Node 22+,
+git, Caddy, clone + `.env` + `npm ci` + `npm run build`, a systemd service for
+`npm start`, Caddyfile `<name>.duckdns.org { reverse_proxy localhost:3001 }`.
+Render.com's free tier is simpler but sleeps after 15 min idle.
 
 Before sharing the address widely: rate-limit the map tile proxy (`/api/geo/tile`).
 
