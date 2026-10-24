@@ -71,6 +71,44 @@ cache, driven over CDP with the `ws` package, works for screenshots (keep runs
 sequential: they share a debug port). Emoji don't render there, which is why
 icons are drawn in code.
 
+## Deploying (plan, not set up yet)
+
+Goal: an always-on server with a fixed HTTPS address, so the Discord URL mapping
+is set once (no quick tunnel). The app already supports it: `npm run build` +
+`npm start` serves the client and the API from one port (`PORT`, default 3001).
+Production only allows real Discord logins (no mock guests), so keep testing
+locally with `npm run dev`.
+
+```
+Discord --https--> <name>.duckdns.org --> Caddy (HTTPS) --> npm start (port 3001)
+```
+
+Planned free setup:
+1. Oracle Cloud "Always Free" VM, Ubuntu, Ampere (ARM) shape (or the small free AMD
+   one if there's no capacity). Note the public IP.
+2. Free DuckDNS name (e.g. `hayalo.duckdns.org`) pointing at that IP.
+3. Open TCP 80 and 443 in both the Oracle security list and the VM's own
+   firewall (`sudo iptables -I INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT`
+   then `sudo netfilter-persistent save`). Missing one of the two is the usual
+   mistake.
+4. Install Node 22+, git and Caddy on the VM.
+5. `git clone` (deploy key if the repo is private), create `.env` by hand (never
+   commit it), `npm ci`, `npm run build`. `.env` must exist before the build: the
+   client ID is baked into the client bundle.
+6. A systemd service running `npm start` in the repo folder (restarts on crash and
+   reboot), and a Caddyfile: `<name>.duckdns.org { reverse_proxy localhost:3001 }`.
+   Caddy gets the certificate by itself.
+7. Developer Portal → Activities → URL Mappings: target `<name>.duckdns.org`, once.
+
+Updating: `git pull && npm ci && npm run build && sudo systemctl restart hayalo`.
+A restart ends matches in progress, so update between game nights.
+
+Alternatives: Render.com free tier (deploys from GitHub, but sleeps after 15 min
+idle, slow first launch, a sleep ends the match). Or run it on whatever machine
+already hosts the Hayalo Discord bot, if that machine can accept inbound HTTPS.
+
+Before sharing the address widely: rate-limit the map tile proxy (`/api/geo/tile`).
+
 ## Current status (2026-10-24)
 
 Working:
