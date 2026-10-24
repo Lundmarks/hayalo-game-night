@@ -43,7 +43,7 @@ README.md covers setup, Discord portal config, and architecture. Read it first.
   registered in `VIEWS` in `src/client/main.ts`. Clicks use `data-act` (JSON game
   action) or `data-cmd`.
 
-## Current status (2026-10-23)
+## Current status (2026-10-24)
 
 Working:
 - Launcher with host-picks-game, host handover when the host leaves, reconnecting
@@ -56,6 +56,14 @@ Working:
   follows the action on narrow screens, keyboard + touch controls, synthesized
   audio with panning. Surrender (tap twice), forfeit after 60s disconnected,
   turn clock paused during jump/fall animations, per-team worm rotation by id.
+- Artillery look and feel (2026-10-24): 5 themes x 6 map shapes picked from the
+  seed, destructible scenery (material layer `Terrain.mat`, caves listed in
+  `Terrain.caves` for the back wall), cartoon renderer (inked outlines, worm faces
+  and politician hats, comic BOOM text, plane for air strikes, birds/snow), more
+  synthesized sounds (voice "ow", boing, bonk, slide whistle, sad trombone).
+  Worm names are politicians (`HEROES`/`VILLAINS` in the server module).
+  Fixed: fused bombs passed through worms; bombs stuck instead of rolling; a hidden
+  170px walk budget plus a too-strict slope check made walking stop.
 - Hay, Where? (geoguess): Wikimedia Commons photos, Leaflet + OSM map, rounds
   3/5/10, 30/60/90s, 15s rush after the first lock-in, speed bonus, reveal map
   with all pins, auto-advance, host skip/next/end, click-to-zoom photo, phone layout
@@ -83,6 +91,8 @@ Features worth adding:
 - Health/weapon crates dropped between turns.
 - Trajectory preview for the first few turns or as a practice-mode option.
 - Session scoreboard for artillery (like tic-tac-toe's win counts).
+- Craters that cut into a cave get the cave back wall when a client rebuilds the
+  map (late join), but open sky for clients that saw the blast. Cosmetic only.
 - More games in the launcher (the `GAMES` list supports `available: false`
   "Coming soon" cards).
 

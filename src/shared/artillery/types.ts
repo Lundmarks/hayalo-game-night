@@ -48,7 +48,6 @@ export type Turn = {
   team: number;
   wormId: number;
   endsAt: number; // server clock, ms
-  walkLeft: number;
   angle: number; // radians, screen coordinates (y points down)
   power: number; // 0..1
   weapon: WeaponId;
@@ -102,7 +101,7 @@ export type Timeline = {
 
 export type ArtEvent =
   | { type: 'timeline'; tl: Timeline }
-  | { type: 'walk'; wormId: number; x: number; y: number; facing: 1 | -1; walkLeft: number }
+  | { type: 'walk'; wormId: number; x: number; y: number; facing: 1 | -1 }
   | { type: 'aim'; angle: number; power: number; weapon: WeaponId };
 
 export type ArtAction =

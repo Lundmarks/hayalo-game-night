@@ -1,10 +1,10 @@
 import { clearSpot, SAMPLE, FPS, WORM_R } from '../../../shared/artillery/sim.ts';
-import { H, Terrain, W, WATER_Y } from '../../../shared/artillery/terrain.ts';
+import { H, mapInfo, SHAPE_NAMES, Terrain, THEME_NAMES, W, WATER_Y, type ThemeId } from '../../../shared/artillery/terrain.ts';
 import { WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Crater, type ProjKind, type SimEvent, type Timeline, type Track, type WeaponId } from '../../../shared/artillery/types.ts';
 import type { Player, RoomView } from '../../../shared/protocol.ts';
 import { audio, type Sound } from '../../audio.ts';
 import { esc, toast, type ViewFactory } from '../../ui.ts';
-import { buildBackdrop, buildTerrainCanvas, carveCanvas, drawGrave, drawProjectile, drawSky, drawWater, drawWorm, Particles } from './render.ts';
+import { buildBackdrop, buildTerrainCanvas, carveCanvas, drawBird, drawCloud, drawGrave, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles } from './render.ts';
 
 type Playback = {
   tl: Timeline;
@@ -16,7 +16,12 @@ type Playback = {
   fx: Set<string>; // one-off effects already played (fuse ticks, whistles…)
 };
 
-type Floater = { x: number; y: number; text: string; color: string; life: number };
+type Floater = { x: number; y: number; text: string; color: string; life: number; size: number; comic?: boolean; rot?: number; max?: number };
+
+const pick = <T>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
+const BOOM_WORDS = { small: ['POW!', 'BAM!', 'ZAP!', 'PAF!'], mid: ['BOOM!', 'KAPOW!', 'WHAM!', 'BLAM!'], big: ['KABOOM!!', 'KA-BLAM!!', 'MEGA BOOM!'] };
+const OUT_LINES = ['was voted out!', 'got impeached!', 'resigned in disgrace!', 'lost re-election!', 'was deposed!', 'left office!', 'is out of politics!'];
+const DROWN_LINES = ['sank in the polls!', 'went for a swim!', 'is sleeping with the fishes!', 'was washed out!'];
 
 const normAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
@@ -77,7 +82,21 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   let terrainCanvas: HTMLCanvasElement | null = null;
   let seed = 0;
   let applied = 0;
-  const backdrop = buildBackdrop();
+  let theme: ThemeId = 'meadow';
+  let pal = PALETTES.meadow;
+  let backdrop = buildBackdrop(theme);
+  let banner: { text: string; sub: string; t0: number } | null = null;
+
+  // Sky dressing: drifting clouds, birds, snow.
+  const clouds = Array.from({ length: 7 }, (_, i) => ({ x: (i / 7) * (W + 200) - 100 + Math.random() * 80, y: 40 + Math.random() * 150, s: 0.7 + Math.random() * 0.6 }));
+  let birds: { x: number; y: number; vx: number }[] = [];
+  let nextBirds = performance.now() + 4000;
+  let nextChirp = 0;
+  const flakes = Array.from({ length: 140 }, () => ({ x: Math.random() * W, y: Math.random() * H, s: 1 + Math.random() * 2, p: Math.random() * 6 }));
+  let plane: { tx: number; f: number; dir: 1 | -1 } | null = null;
+  let flash = 0;
+  const hurtAt = new Map<number, number>();
+  const landAt = new Map<number, number>();
 
   let pb: Playback | null = null;
   const parts = new Particles();
@@ -130,7 +149,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
 
   function applyCrater(c: Crater) {
     terrain?.carve(c[0], c[1], c[2]);
-    if (terrainCanvas) carveCanvas(terrainCanvas, c[0], c[1], c[2]);
+    if (terrainCanvas) carveCanvas(terrainCanvas, c[0], c[1], c[2], theme);
     applied++;
   }
 
@@ -143,6 +162,14 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       return;
     }
     if (s.seed !== seed || s.craters.length < applied) {
+      if (s.seed !== seed) {
+        const info = mapInfo(s.seed);
+        theme = info.theme;
+        pal = PALETTES[theme];
+        backdrop = buildBackdrop(theme);
+        parts.debris = pal.debris;
+        banner = { text: THEME_NAMES[info.theme], sub: SHAPE_NAMES[info.shape], t0: performance.now() };
+      }
       terrain = Terrain.generate(s.seed, s.craters);
       terrainCanvas = buildTerrainCanvas(terrain);
       seed = s.seed;
@@ -182,6 +209,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (turnChanged && s.phase === 'aiming') {
       if (myTurn()) {
         sfx('yourTurn');
+        setTimeout(() => sfx('hup'), 250);
         aim = { angle: s.turn!.angle, power: s.turn!.power };
         weapon = 'bazooka';
         target = null;
@@ -235,20 +263,52 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     } else renderHud();
   }
 
+  const nowF = () => ((performance.now() - pb!.t0) / 1000) * FPS;
+
+  function comic(x: number, y: number, text: string, size: number, color = '#ffe14d') {
+    floaters.push({ x, y, text, color, life: 0, size, comic: true, rot: (Math.random() - 0.5) * 0.4, max: 1.1 });
+  }
+
   function handleEvent(e: SimEvent) {
     const p = pb!;
     switch (e.type) {
-      case 'fire':
-        sfx(e.kind === 'grenade' || e.kind === 'haybomb' ? 'throw' : e.kind === 'shotgun' ? 'click' : 'launch', e.x);
+      case 'fire': {
+        const shooter = s?.turn ? wormPos(s.turn.wormId, nowF()) : [e.x, e.y];
+        parts.muzzle(e.x, e.y, Math.atan2(e.y - shooter[1], e.x - shooter[0]));
+        if (e.kind === 'grenade' || e.kind === 'haybomb' || e.kind === 'cluster') sfx('throw', e.x);
+        else if (e.kind === 'shotgun') sfx('click', e.x);
+        else {
+          sfx('launch', e.x);
+          sfx('whoosh', e.x, 0.7);
+        }
         break;
-      case 'explode':
-        if (e.crater === applied) applyCrater([e.x, e.y, e.r!]);
-        parts.explosion(e.x, e.y, e.r!);
-        shake = Math.min(18, shake + e.r! / 4);
-        sfx(e.r! >= 60 ? 'bigExplosion' : e.r! >= 24 ? 'explosion' : 'smallExplosion', e.x);
+      }
+      case 'explode': {
+        const r = e.r!;
+        if (e.crater === applied) applyCrater([e.x, e.y, r]);
+        parts.explosion(e.x, e.y, r);
+        shake = Math.min(22, shake + r / 3);
+        if (r >= 60) flash = 0.7;
+        if (e.kind === 'haybomb') {
+          parts.holy(e.x, e.y);
+          comic(e.x, e.y - r * 0.6, 'HALLELUJAH!', 30, '#fff59a');
+        } else if (r >= 16) {
+          comic(e.x, e.y - r * 0.5, pick(r >= 60 ? BOOM_WORDS.big : r >= 28 ? BOOM_WORDS.mid : BOOM_WORDS.small), r >= 28 ? 24 : 17);
+        }
+        sfx(r >= 60 ? 'bigExplosion' : r >= 24 ? 'explosion' : 'smallExplosion', e.x);
         break;
+      }
       case 'bounce':
-        sfx('bounce', e.x, 0.8);
+        if (e.wormId !== undefined) {
+          // Bonked a worm on the head.
+          parts.stars(e.x, e.y, 4);
+          comic(e.x, e.y - 10, 'BONK!', 14, '#ffffff');
+          sfx('bonk', e.x);
+          hurtAt.set(e.wormId, performance.now() - 300);
+        } else {
+          parts.dust(e.x, e.y, 3, 0.6);
+          sfx(e.kind === 'haybomb' ? 'boing' : 'bounce', e.x, 0.8);
+        }
         break;
       case 'splash':
         parts.splash(e.x, e.y);
@@ -257,34 +317,59 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       case 'damage': {
         p.hp.set(e.wormId!, Math.max(0, (p.hp.get(e.wormId!) ?? 0) - e.amount!));
         const w = wormById(e.wormId!);
-        const [x, y] = wormPos(e.wormId!, (performance.now() - p.t0) / 1000 * FPS);
-        floaters.push({ x, y: y - 20, text: `-${e.amount}`, color: w ? s!.teams[w.team].color : '#fff', life: 0 });
+        const [x, y] = wormPos(e.wormId!, nowF());
+        floaters.push({ x, y: y - 20, text: `-${e.amount}`, color: w ? s!.teams[w.team].color : '#fff', life: 0, size: 18, rot: 0 });
+        hurtAt.set(e.wormId!, performance.now());
         sfx('hurt', x, 0.9);
         break;
       }
-      case 'die':
+      case 'die': {
         p.alive.set(e.wormId!, false);
-        if (e.kind !== 'drown') parts.explosion(e.x, e.y, 10);
-        sfx('die', e.x);
+        const w = wormById(e.wormId!);
+        const name = w?.name ?? 'Someone';
+        if (e.kind === 'drown') {
+          parts.splash(e.x, e.y, true);
+          parts.bubbles(e.x, e.y);
+          sfx('slide', e.x);
+          setTimeout(() => sfx('bubbles', e.x), 700);
+          comic(e.x, WATER_Y - 40, `${name} ${pick(DROWN_LINES)}`, 15, '#ffffff');
+        } else {
+          parts.explosion(e.x, e.y, 12);
+          parts.confetti(e.x, e.y, w ? [s!.teams[w.team].color, '#fff', '#ffe14d'] : ['#fff']);
+          sfx('die', e.x);
+          comic(e.x, e.y - 30, `${name} ${pick(OUT_LINES)}`, 15, '#ffffff');
+        }
         break;
+      }
       case 'shot':
         parts.tracer(e.x, e.y, e.x2!, e.y2!);
+        parts.muzzle(e.x, e.y, Math.atan2(e.y2! - e.y, e.x2! - e.x));
         sfx('shotgun', e.x);
+        if (Math.random() < 0.6) setTimeout(() => sfx('ricochet', e.x2, 0.6), 120);
         break;
-      case 'airstrike':
+      case 'airstrike': {
+        const w = s?.turn ? wormById(s.turn.wormId) : undefined;
+        plane = { tx: e.x, f: e.f, dir: w?.facing ?? 1 };
         sfx('plane', e.x);
         break;
+      }
       case 'teleport':
         parts.sparkle(e.x, e.y);
         parts.sparkle(e.x2!, e.y2!);
         sfx('teleport', e.x2);
+        setTimeout(() => sfx('pop', e.x2), 250);
         break;
       case 'jump':
+        parts.dust(e.x, e.y + WORM_R, 5, 0.8);
         sfx('jump', e.x);
         break;
-      case 'land':
-        if ((e.amount ?? 0) > 200) sfx('land', e.x, Math.min(1, (e.amount ?? 0) / 500));
+      case 'land': {
+        const v = e.amount ?? 0;
+        if (v > 120) parts.dust(e.x, e.y + WORM_R, Math.round(4 + v / 80), Math.min(2, v / 300));
+        if (v > 200) sfx('land', e.x, Math.min(1, v / 500));
+        if (v > 120) landAt.set(e.wormId!, performance.now());
         break;
+      }
     }
   }
 
@@ -315,7 +400,10 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         }
       }
     }
-    if (f >= p.tl.frames) finishPlayback();
+    if (f >= p.tl.frames) {
+      plane = null;
+      finishPlayback();
+    }
   }
 
   // ---------- HUD ----------
@@ -537,7 +625,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       send({ a: 'walk', dir });
       // Turning around mirrors the aim.
       if (facingOf(aim.angle) !== dir) aim.angle = normAngle(Math.PI - aim.angle);
-      if (s!.turn!.walkLeft > 0 && ++walkCount % 3 === 0) sfx('step', wormPos(s!.turn!.wormId, 0)[0]);
+      if (++walkCount % 3 === 0) sfx('step', wormPos(s!.turn!.wormId, 0)[0]);
     }
 
     const up = keys.has('ArrowUp') || keys.has('w') ? 1 : 0;
@@ -623,28 +711,44 @@ export const createArtilleryView: ViewFactory = (root, send) => {
 
     const { scale, ox, oy, cw, ch, dpr } = view;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawSky(ctx, cw, ch);
+    drawSky(ctx, cw, ch, pal);
 
     shake *= Math.pow(0.02, dt);
     const sx = (Math.random() - 0.5) * shake;
     const sy = (Math.random() - 0.5) * shake;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox + sx), dpr * (oy + sy));
+    drawSun(ctx, time, pal);
+    drawSkyLife(dt, now, time);
     ctx.drawImage(backdrop, 0, 0);
     if (terrainCanvas) ctx.drawImage(terrainCanvas, 0, 0);
 
     const labels: { x: number; y: number; name: string; hp: number; color: string }[] = [];
     if (s && s.phase !== 'lobby') {
+      const focus = focusPoint(f);
       // Worms (and graves)
       for (const w of s.worms) {
         const alive = pb ? pb.alive.get(w.id) ?? w.alive : w.alive;
         let [x, y] = wormPos(w.id, f);
+        let walking = false;
+        let stretch = 0;
         if (!pb && alive) {
           const d = disp.get(w.id);
           if (d) {
+            walking = Math.abs(w.x - d.x) > 0.4;
             d.x += (w.x - d.x) * Math.min(1, dt * 18);
             d.y += (w.y - d.y) * Math.min(1, dt * 18);
             [x, y] = [d.x, d.y];
           }
+        }
+        if (pb) {
+          const [, py] = wormPos(w.id, f - 2);
+          stretch = Math.min(0.3, Math.abs(y - py) / 30);
+        }
+        const landed = landAt.get(w.id);
+        if (landed !== undefined) {
+          const t = (now - landed) / 1000;
+          if (t < 0.25) stretch = -0.3 * Math.sin((t / 0.25) * Math.PI);
+          else landAt.delete(w.id);
         }
         if (!alive) {
           if (y < WATER_Y - 4) drawGrave(ctx, x, y);
@@ -655,19 +759,32 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         let facing = w.facing;
         if (active && myTurn()) facing = facingOf(aim.angle);
         else if (active && s.turn) facing = facingOf(s.turn.angle);
-        drawWorm(ctx, x, y, team.color, facing, time, active);
+        // Eyes follow the aim, or whatever is flying around.
+        let look: number | null = null;
+        if (active && !pb && s.turn) look = myTurn() ? aim.angle : s.turn.angle;
+        else if (focus && Math.hypot(focus[0] - x, focus[1] - y) > 4) look = Math.atan2(focus[1] - y, focus[0] - x);
+        if (!active && look !== null && !pb) facing = Math.cos(look) >= 0 ? 1 : -1;
         const hp = pb ? pb.hp.get(w.id) ?? w.hp : w.hp;
+        const hurt = hurtAt.get(w.id);
+        drawWorm(ctx, x, y, {
+          id: w.id, name: w.name, color: team.color, facing, time, active, walking, hp, look, stretch,
+          hurtAgo: hurt === undefined ? 99 : (now - hurt) / 1000,
+        });
         labels.push({ x, y, name: w.name, hp, color: team.color });
 
         if (active && !pb) {
           // Bouncing marker
-          const by = y - 34 + Math.sin(time * 5) * 3;
+          const by = y - 40 + Math.sin(time * 5) * 3;
           ctx.fillStyle = team.color;
+          ctx.strokeStyle = '#2b1d33';
+          ctx.lineWidth = 1.5;
           ctx.beginPath();
-          ctx.moveTo(x - 5, by - 6);
-          ctx.lineTo(x + 5, by - 6);
+          ctx.moveTo(x - 6, by - 8);
+          ctx.lineTo(x + 6, by - 8);
           ctx.lineTo(x, by);
+          ctx.closePath();
           ctx.fill();
+          ctx.stroke();
           drawAim(x, y, team.color, time);
         }
       }
@@ -681,50 +798,148 @@ export const createArtilleryView: ViewFactory = (root, send) => {
           drawProjectile(ctx, tr.kind as ProjKind, x, y, Math.atan2(y - py, x - px), time);
         }
       }
+      if (plane && pb) {
+        const px = plane.tx - plane.dir * 120 + plane.dir * (f - plane.f - 50) * 4.3;
+        if (px > -150 && px < W + 150) drawPlane(ctx, px, 26 + Math.sin(time * 3) * 3, plane.dir, time);
+      }
     }
 
     parts.draw(ctx);
-    drawWater(ctx, time, (ch - oy) / scale + 10);
+    drawWater(ctx, time, (ch - oy) / scale + 10, pal);
+    if (pal.weather === 'snow') drawSnow(dt, time);
 
     // Screen-space text so it stays crisp at any zoom.
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = 'center';
-    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.lineJoin = 'round';
     for (const l of labels) {
       const lx = ox + l.x * scale;
-      const ly = oy + (l.y - WORM_R) * scale - 8;
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      const ly = oy + (l.y - WORM_R) * scale - 10;
+      ctx.font = '800 11px system-ui, sans-serif';
+      const hpText = `${l.hp}`;
+      const bw = ctx.measureText(hpText).width + 8;
+      ctx.fillStyle = 'rgba(26, 19, 37, 0.85)';
+      ctx.strokeStyle = l.color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(lx - bw / 2, ly - 10, bw, 13, 4);
+      ctx.fill();
+      ctx.stroke();
       ctx.fillStyle = l.color;
-      ctx.strokeText(`${l.hp}`, lx, ly);
-      ctx.fillText(`${l.hp}`, lx, ly);
-      ctx.font = '500 10px system-ui, sans-serif';
+      ctx.fillText(hpText, lx, ly + 0.5);
+      ctx.font = '700 10px system-ui, sans-serif';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(26,19,37,0.85)';
       ctx.fillStyle = '#fff';
-      ctx.strokeText(l.name, lx, ly - 12);
-      ctx.fillText(l.name, lx, ly - 12);
-      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.strokeText(l.name, lx, ly - 14);
+      ctx.fillText(l.name, lx, ly - 14);
     }
-    ctx.font = '800 15px system-ui, sans-serif';
     for (let i = floaters.length - 1; i >= 0; i--) {
       const fl = floaters[i];
       fl.life += dt;
-      if (fl.life > 1.3) {
+      const max = fl.max ?? 1.3;
+      if (fl.life > max) {
         floaters.splice(i, 1);
         continue;
       }
-      const a = Math.min(1, (1.3 - fl.life) * 2);
-      ctx.globalAlpha = a;
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      // Pop in big, settle, then fade.
+      const t = fl.life;
+      const pop = t < 0.12 ? 0.4 + (t / 0.12) * 0.9 : t < 0.25 ? 1.3 - ((t - 0.12) / 0.13) * 0.3 : 1;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, (max - t) * 3);
+      ctx.translate(ox + fl.x * scale, oy + fl.y * scale - t * (fl.comic ? 18 : 34));
+      ctx.rotate(fl.rot ?? 0);
+      ctx.scale(pop, pop);
+      ctx.font = fl.comic ? `900 ${fl.size}px "Comic Sans MS", "Chalkboard SE", "Comic Neue", system-ui, sans-serif` : `900 ${fl.size}px system-ui, sans-serif`;
+      ctx.lineWidth = fl.comic ? 6 : 4;
+      ctx.strokeStyle = fl.comic ? '#2b1d33' : 'rgba(0,0,0,0.85)';
       ctx.fillStyle = fl.color;
-      const fx = ox + fl.x * scale;
-      const fy = oy + fl.y * scale - fl.life * 30;
-      ctx.strokeText(fl.text, fx, fy);
-      ctx.fillText(fl.text, fx, fy);
-      ctx.globalAlpha = 1;
+      ctx.strokeText(fl.text, 0, 0);
+      ctx.fillText(fl.text, 0, 0);
+      ctx.restore();
     }
 
+    if (flash > 0.01) {
+      ctx.fillStyle = `rgba(255, 252, 235, ${flash})`;
+      ctx.fillRect(0, 0, cw, ch);
+      flash *= Math.pow(0.004, dt);
+    }
+    if (banner) drawBanner(now, cw, ch);
+
     updateTimer();
+  }
+
+  /** "Frosty Peaks · Twin Isles" title card at the start of a match. */
+  function drawBanner(now: number, cw: number, ch: number) {
+    const t = (now - banner!.t0) / 1000;
+    if (t > 3.2 || !s || s.phase === 'lobby') {
+      if (t > 3.2) banner = null;
+      return;
+    }
+    const a = Math.min(1, t * 4, (3.2 - t) * 2);
+    const drop = t < 0.3 ? (1 - t / 0.3) * -40 : 0;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(cw / 2, Math.min(ch * 0.28, 120) + drop);
+    ctx.rotate(-0.03);
+    ctx.textAlign = 'center';
+    ctx.lineJoin = 'round';
+    ctx.font = '900 32px "Comic Sans MS", "Chalkboard SE", "Comic Neue", system-ui, sans-serif';
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = '#2b1d33';
+    ctx.fillStyle = '#ffe14d';
+    ctx.strokeText(banner!.text, 0, 0);
+    ctx.fillText(banner!.text, 0, 0);
+    ctx.font = '800 16px system-ui, sans-serif';
+    ctx.lineWidth = 5;
+    ctx.fillStyle = '#fff';
+    ctx.strokeText(banner!.sub, 0, 24);
+    ctx.fillText(banner!.sub, 0, 24);
+    ctx.restore();
+  }
+
+  function drawSkyLife(dt: number, now: number, time: number) {
+    const wind = s && (s.phase === 'aiming' || s.phase === 'resolving') ? s.wind : 0.1;
+    for (const c of clouds) {
+      c.x += (wind * 30 + 3) * c.s * dt;
+      if (c.x > W + 120) c.x = -120;
+      if (c.x < -120) c.x = W + 120;
+      drawCloud(ctx, c.x, c.y, c.s);
+    }
+    if (pal.weather !== 'birds') return;
+    if (now > nextBirds) {
+      nextBirds = now + 9000 + Math.random() * 14000;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const y = 60 + Math.random() * 120;
+      const n = 2 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < n; i++) birds.push({ x: dir > 0 ? -30 - i * 22 : W + 30 + i * 22, y: y + (i % 2) * 12 + Math.random() * 6, vx: dir * (60 + Math.random() * 15) });
+    }
+    birds = birds.filter((b) => b.x > -200 && b.x < W + 200);
+    for (const b of birds) {
+      b.x += b.vx * dt;
+      drawBird(ctx, b.x, b.y + Math.sin(time * 2 + b.x / 50) * 4, time);
+    }
+    if (birds.length && now > nextChirp) {
+      nextChirp = now + 700 + Math.random() * 1500;
+      const b = birds[Math.floor(Math.random() * birds.length)];
+      if (b.x > 0 && b.x < W) sfx('chirp', b.x, 0.5);
+    }
+  }
+
+  function drawSnow(dt: number, time: number) {
+    const wind = s && (s.phase === 'aiming' || s.phase === 'resolving') ? s.wind : 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    for (const fl of flakes) {
+      fl.y += (18 + fl.s * 12) * dt;
+      fl.x += (wind * 70 + Math.sin(time + fl.p) * 10) * dt;
+      if (fl.y > WATER_Y) fl.y = -5;
+      if (fl.x > W + 10) fl.x = -10;
+      if (fl.x < -10) fl.x = W + 10;
+      ctx.moveTo(fl.x + fl.s, fl.y);
+      ctx.arc(fl.x, fl.y, fl.s, 0, Math.PI * 2);
+    }
+    ctx.fill();
   }
 
   function drawAim(x: number, y: number, color: string, time: number) {
@@ -754,7 +969,13 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     ctx.save();
     ctx.setLineDash([4, 5]);
     ctx.lineDashOffset = -time * 20;
-    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.strokeStyle = 'rgba(43,29,51,0.5)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(x + dx * 14, y + dy * 14);
+    ctx.lineTo(x + dx * len, y + dy * len);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(x + dx * 14, y + dy * 14);
@@ -768,8 +989,11 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     ctx.stroke();
     if (mine) {
       ctx.fillStyle = '#fff';
-      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.strokeStyle = 'rgba(43,29,51,0.8)';
+      ctx.lineWidth = 3;
+      ctx.font = '800 11px system-ui, sans-serif';
       ctx.textAlign = 'center';
+      ctx.strokeText(`${Math.round(power * 100)}%`, x + dx * (len + 16), y + dy * (len + 16) + 4);
       ctx.fillText(`${Math.round(power * 100)}%`, x + dx * (len + 16), y + dy * (len + 16) + 4);
     }
     ctx.restore();
@@ -817,7 +1041,6 @@ export const createArtilleryView: ViewFactory = (root, send) => {
           w.x = e.x;
           w.y = e.y;
           w.facing = e.facing;
-          if (s?.turn) s.turn.walkLeft = e.walkLeft;
           if (!myTurn() && ++walkCount % 3 === 0) sfx('step', e.x, 0.6);
         }
       } else if (e.type === 'aim') {

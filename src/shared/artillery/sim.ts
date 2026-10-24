@@ -59,7 +59,9 @@ export function walk(t: Terrain, w: Worm, dir: 1 | -1, px: number) {
     while (up <= MAX_CLIMB && t.solid(nx, ny + WORM_R - up)) up++;
     if (up > MAX_CLIMB) break;
     ny -= up;
-    if (t.solid(nx, ny - WORM_R) || t.solid(nx + dir * WORM_R, ny - 2)) break;
+    // Head and upper body must fit. Slopes are handled by the climb above, so
+    // anything up to MAX_CLIMB px per px (about 75°) is walkable.
+    if (t.solid(nx, ny - WORM_R) || t.solid(nx + dir * (WORM_R - 3), ny - WORM_R / 2)) break;
     let down = 0;
     while (down <= MAX_CLIMB && !footSolid(t, nx, ny + 1)) {
       ny++;
@@ -218,6 +220,38 @@ export class Sim {
     }
   }
 
+  /**
+   * Bounce off a surface with normal (nx, ny): the part of the velocity into
+   * the surface flips and shrinks by `bounce`, the part along it keeps
+   * `slide` (so grenades roll). Returns the speed into the surface (negative).
+   */
+  private reflect(p: Proj, nx: number, ny: number, bounce: number, slide: number) {
+    const dot = p.vx * nx + p.vy * ny;
+    if (dot >= 0) return dot;
+    const tx = p.vx - dot * nx;
+    const ty = p.vy - dot * ny;
+    // Rolling contact happens every frame, so it only gets a little friction.
+    if (-dot < 40) slide = 0.985;
+    p.vx = tx * slide - dot * nx * bounce;
+    p.vy = ty * slide - dot * ny * bounce;
+    return dot;
+  }
+
+  private bounceOffWorm(p: Proj, w: Worm) {
+    const r = WORM_R + 3;
+    let nx = p.x - w.x;
+    let ny = p.y - w.y;
+    const d = Math.hypot(nx, ny);
+    if (d < 0.01) [nx, ny] = [0, -1];
+    else [nx, ny] = [nx / d, ny / d];
+    p.x = w.x + nx * (r + 0.5);
+    p.y = w.y + ny * (r + 0.5);
+    const dot = this.reflect(p, nx, ny, 0.55, 0.85);
+    // Something resting on a head slides off instead of balancing there.
+    if (Math.abs(p.vx) < 15) p.vx += (nx >= 0 ? 1 : -1) * 25;
+    if (-dot > 50) this.event({ type: 'bounce', x: p.x, y: p.y, kind: p.kind, wormId: w.id });
+  }
+
   private stepProj(p: Proj) {
     const spec = PROJ[p.kind];
     p.age++;
@@ -242,20 +276,24 @@ export class Sim {
         this.endTrack(p.track, p.x, p.y);
         return;
       }
-      if (!spec.fuse) {
-        const hit = this.worms.find((w) => w.alive && (w.id !== p.owner || p.age > 8) && Math.hypot(w.x - p.x, w.y - p.y) < WORM_R + 3);
-        if (hit) return this.detonate(p);
+      const hit = this.worms.find((w) => w.alive && (w.id !== p.owner || p.age > 8) && Math.hypot(w.x - p.x, w.y - p.y) < WORM_R + 3);
+      if (hit) {
+        if (!spec.fuse) return this.detonate(p);
+        // Fused bombs bounce off worms like they bounce off the ground.
+        this.bounceOffWorm(p, hit);
+        break;
       }
       if (this.t.solid(p.x, p.y)) {
         if (!spec.bouncy) return this.detonate(p);
+        // Back out of the ground, but keep the sideways part of the move
+        // (stepping over 1px bumps) so bombs roll instead of sticking.
+        const dx = p.x - px;
         p.x = px;
         p.y = py;
+        if (!this.t.solid(px + dx, py)) p.x = px + dx;
+        else if (!this.t.solid(px + dx, py - 1)) [p.x, p.y] = [px + dx, py - 1];
         const [nx, ny] = this.normal(px, py);
-        const dot = p.vx * nx + p.vy * ny;
-        if (dot < 0) {
-          p.vx = (p.vx - 2 * dot * nx) * 0.5;
-          p.vy = (p.vy - 2 * dot * ny) * 0.5;
-        }
+        const dot = this.reflect(p, nx, ny, 0.45, 0.82);
         if (-dot > 70) this.event({ type: 'bounce', x: p.x, y: p.y, kind: p.kind });
         break;
       }

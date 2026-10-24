@@ -10,6 +10,7 @@
 export type Sound =
   | 'explosion' | 'bigExplosion' | 'smallExplosion' | 'launch' | 'throw' | 'bounce' | 'splash' | 'shotgun'
   | 'plane' | 'whistle' | 'teleport' | 'jump' | 'land' | 'hurt' | 'die' | 'holy' | 'fuse' | 'step'
+  | 'boing' | 'bonk' | 'pop' | 'slide' | 'bubbles' | 'ricochet' | 'chirp' | 'whoosh' | 'hup' | 'sadTrombone'
   | 'click' | 'select' | 'yourTurn' | 'turn' | 'tick' | 'win' | 'lose' | 'place';
 
 type Opts = { pan?: number; gain?: number; pitch?: number };
@@ -132,7 +133,7 @@ class AudioEngine {
     if (!ctx || this.muted || ctx.state !== 'running') return;
     if (this.voices > 28) return;
 
-    const isUi = ['click', 'select', 'yourTurn', 'turn', 'tick', 'win', 'lose', 'place'].includes(name);
+    const isUi = ['click', 'select', 'yourTurn', 'turn', 'tick', 'win', 'lose', 'place', 'sadTrombone'].includes(name);
     const out = ctx.createGain();
     out.gain.value = o.gain ?? 1;
     const panner = ctx.createStereoPanner();
@@ -189,6 +190,28 @@ class AudioEngine {
     src.stop(t + (o.attack ?? 0.005) + o.decay + 0.05);
   }
 
+  /**
+   * A tiny cartoon voice: a buzzy tone through two vowel filters that glide
+   * from one vowel to another. Formants are [F1, F2] pairs in Hz.
+   */
+  voice(out: AudioNode, t: number, o: { pitch: number[]; from: [number, number]; to: [number, number]; dur: number; peak: number }) {
+    const osc = this.c.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(o.pitch[0], t);
+    o.pitch.slice(1).forEach((f, i) => osc.frequency.linearRampToValueAtTime(f, t + (o.dur * (i + 1)) / (o.pitch.length - 1)));
+    const g = this.env(t, 0.015, o.peak, o.dur);
+    for (const k of [0, 1]) {
+      const f = this.filter('bandpass', o.from[k], k ? 9 : 6);
+      f.frequency.linearRampToValueAtTime(o.to[k], t + o.dur);
+      const lvl = this.c.createGain();
+      lvl.gain.value = k ? 0.6 : 1;
+      osc.connect(f).connect(lvl).connect(g);
+    }
+    g.connect(out);
+    osc.start(t);
+    osc.stop(t + o.dur + 0.1);
+  }
+
   /** Oscillator with a pitch sweep. */
   tone(out: AudioNode, t: number, o: { type?: OscillatorType; from: number; to?: number; attack?: number; peak: number; decay: number; sweep?: number }) {
     const osc = this.c.createOscillator();
@@ -209,7 +232,13 @@ const explosion = (size: number): Recipe => (a, out, t, p) => {
   a.burst(out, t, { type: 'lowpass', from: (900 + 1600 * size) * p, to: 70, q: 0.8, peak: 0.9, decay: d });
   a.burst(out, t, { type: 'highpass', from: 2500, peak: 0.35 * size, decay: 0.07 });
   a.tone(out, t, { from: 95 * p, to: 30, peak: 0.9, decay: 0.3 + 0.3 * size });
-  return d + 0.1;
+  // Cartoon "ka-" thump before the boom, and dirt crackling down afterwards.
+  a.tone(out, t, { type: 'square', from: 180 * p, to: 60, peak: 0.25, decay: 0.08 });
+  const bits = Math.round(4 + size * 6);
+  for (let i = 0; i < bits; i++) {
+    a.burst(out, t + 0.15 + Math.random() * d, { type: 'bandpass', from: 1500 + Math.random() * 2500, q: 4, peak: 0.12, decay: 0.025 });
+  }
+  return d + 0.2;
 };
 
 const notes = (freqs: number[], gap: number, type: OscillatorType, peak: number, decay: number): Recipe => (a, out, t) => {
@@ -278,8 +307,9 @@ const RECIPES: Record<Sound, Recipe> = {
   },
   teleport: notes([660, 880, 990, 1320, 1760, 1980], 0.045, 'sine', 0.14, 0.18),
   jump: (a, out, t, p) => {
-    a.tone(out, t, { type: 'triangle', from: 260 * p, to: 560, peak: 0.25, decay: 0.16 });
-    return 0.2;
+    a.tone(out, t, { type: 'triangle', from: 220 * p, to: 700, peak: 0.25, decay: 0.18, sweep: 0.14 });
+    a.voice(out, t, { pitch: [420 * p, 520 * p], from: [600, 1500], to: [750, 1300], dur: 0.1, peak: 0.2 });
+    return 0.25;
   },
   land: (a, out, t) => {
     a.burst(out, t, { type: 'lowpass', from: 500, peak: 0.35, decay: 0.12 });
@@ -287,22 +317,16 @@ const RECIPES: Record<Sound, Recipe> = {
     return 0.2;
   },
   hurt: (a, out, t, p) => {
-    // A rough "oof": buzzy tone through a vowel-like band filter.
-    const o = a.c.createOscillator();
-    o.type = 'sawtooth';
-    o.frequency.setValueAtTime(270 * p, t);
-    o.frequency.exponentialRampToValueAtTime(160 * p, t + 0.2);
-    const f = a.filter('bandpass', 850, 3);
-    const g = a.env(t, 0.01, 0.4, 0.2);
-    o.connect(f).connect(g).connect(out);
-    o.start(t);
-    o.stop(t + 0.25);
-    return 0.3;
+    // A squeaky cartoon "ow!"
+    a.voice(out, t, { pitch: [520 * p, 640 * p, 380 * p], from: [850, 1250], to: [380, 800], dur: 0.28, peak: 0.45 });
+    return 0.35;
   },
-  die: (a, out, t) => {
-    a.tone(out, t, { type: 'triangle', from: 520, to: 120, peak: 0.25, decay: 0.8 });
-    a.burst(out, t + 0.6, { type: 'lowpass', from: 900, peak: 0.3, decay: 0.3 });
-    return 1;
+  die: (a, out, t, p) => {
+    // A deflating squeal and then a pop.
+    a.voice(out, t, { pitch: [700 * p, 900 * p, 260 * p], from: [700, 1500], to: [400, 900], dur: 0.5, peak: 0.3 });
+    a.tone(out, t + 0.55, { from: 260, to: 1300, peak: 0.35, decay: 0.07, sweep: 0.05 });
+    a.burst(out, t + 0.55, { type: 'lowpass', from: 1400, peak: 0.4, decay: 0.25 });
+    return 0.9;
   },
   holy: (a, out, t) => {
     // A short "hallelujah" chord before the big bang.
@@ -329,9 +353,127 @@ const RECIPES: Record<Sound, Recipe> = {
     a.tone(out, t, { type: 'square', from: 2200, peak: 0.05, decay: 0.03 });
     return 0.05;
   },
-  step: (a, out, t) => {
-    a.burst(out, t, { type: 'lowpass', from: 700, peak: 0.08, decay: 0.04 });
-    return 0.06;
+  step: (a, out, t, p) => {
+    a.tone(out, t, { type: 'sine', from: 260 * p, to: 140, peak: 0.1, decay: 0.05 });
+    a.burst(out, t, { type: 'lowpass', from: 600, peak: 0.05, decay: 0.03 });
+    return 0.07;
+  },
+  boing: (a, out, t, p) => {
+    // A spring: a rising tone with a fast wobble.
+    const o = a.c.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(140 * p, t);
+    o.frequency.exponentialRampToValueAtTime(420 * p, t + 0.35);
+    const lfo = a.c.createOscillator();
+    lfo.frequency.value = 26;
+    const depth = a.c.createGain();
+    depth.gain.setValueAtTime(70 * p, t);
+    depth.gain.exponentialRampToValueAtTime(5, t + 0.4);
+    lfo.connect(depth).connect(o.frequency);
+    const g = a.env(t, 0.005, 0.3, 0.4);
+    o.connect(g).connect(out);
+    o.start(t);
+    lfo.start(t);
+    o.stop(t + 0.45);
+    lfo.stop(t + 0.45);
+    return 0.5;
+  },
+  bonk: (a, out, t, p) => {
+    // Wood block on a head.
+    a.tone(out, t, { type: 'sine', from: 720 * p, to: 520 * p, peak: 0.45, decay: 0.09 });
+    a.tone(out, t, { type: 'triangle', from: 1450 * p, peak: 0.12, decay: 0.04 });
+    a.burst(out, t, { type: 'bandpass', from: 1800, q: 5, peak: 0.25, decay: 0.03 });
+    return 0.15;
+  },
+  pop: (a, out, t, p) => {
+    a.tone(out, t, { from: 300 * p, to: 1400 * p, peak: 0.35, decay: 0.07, sweep: 0.05 });
+    a.burst(out, t, { type: 'highpass', from: 2000, peak: 0.2, decay: 0.03 });
+    return 0.1;
+  },
+  slide: (a, out, t, p) => {
+    // Falling slide whistle with a little vibrato.
+    const o = a.c.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(1500 * p, t);
+    o.frequency.exponentialRampToValueAtTime(260 * p, t + 0.9);
+    const lfo = a.c.createOscillator();
+    lfo.frequency.value = 7;
+    const depth = a.c.createGain();
+    depth.gain.value = 25;
+    lfo.connect(depth).connect(o.frequency);
+    const g = a.env(t, 0.04, 0.16, 0.9);
+    o.connect(g).connect(out);
+    o.start(t);
+    lfo.start(t);
+    o.stop(t + 1);
+    lfo.stop(t + 1);
+    return 1;
+  },
+  bubbles: (a, out, t) => {
+    for (let i = 0; i < 9; i++) {
+      const f = 300 + Math.random() * 500;
+      a.tone(out, t + i * 0.07 + Math.random() * 0.04, { from: f, to: f * 2.5, peak: 0.14, decay: 0.05, sweep: 0.04 });
+    }
+    return 0.8;
+  },
+  ricochet: (a, out, t, p) => {
+    const o = a.c.createOscillator();
+    o.frequency.setValueAtTime(3200 * p, t);
+    o.frequency.exponentialRampToValueAtTime(900 * p, t + 0.35);
+    const lfo = a.c.createOscillator();
+    lfo.frequency.value = 40;
+    const depth = a.c.createGain();
+    depth.gain.value = 120;
+    lfo.connect(depth).connect(o.frequency);
+    const g = a.env(t, 0.003, 0.08, 0.35);
+    o.connect(g).connect(out);
+    o.start(t);
+    lfo.start(t);
+    o.stop(t + 0.4);
+    lfo.stop(t + 0.4);
+    return 0.45;
+  },
+  chirp: (a, out, t, p) => {
+    const n = 2 + Math.floor(Math.random() * 3);
+    const base = (2600 + Math.random() * 1200) * p;
+    for (let i = 0; i < n; i++) a.tone(out, t + i * 0.11, { from: base, to: base * 1.5, peak: 0.05, decay: 0.06, sweep: 0.05 });
+    return n * 0.11 + 0.1;
+  },
+  whoosh: (a, out, t, p) => {
+    a.burst(out, t, { type: 'bandpass', from: 400 * p, to: 2600, q: 2, attack: 0.08, peak: 0.25, decay: 0.25 });
+    return 0.4;
+  },
+  hup: (a, out, t, p) => {
+    a.voice(out, t, { pitch: [380 * p, 470 * p], from: [500, 1400], to: [700, 1200], dur: 0.12, peak: 0.35 });
+    return 0.2;
+  },
+  sadTrombone: (a, out, t) => {
+    const f = a.filter('lowpass', 1300);
+    f.connect(out);
+    [293.7, 277.2, 261.6, 246.9].forEach((hz, i) => {
+      const last = i === 3;
+      const st = t + i * 0.32;
+      const len = last ? 0.9 : 0.28;
+      const o = a.c.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = hz;
+      if (last) {
+        const lfo = a.c.createOscillator();
+        lfo.frequency.value = 6;
+        const d = a.c.createGain();
+        d.gain.value = 7;
+        lfo.connect(d).connect(o.frequency);
+        lfo.start(st);
+        lfo.stop(st + len);
+        o.frequency.setValueAtTime(hz, st);
+        o.frequency.linearRampToValueAtTime(hz * 0.94, st + len);
+      }
+      const g = a.env(st, 0.03, 0.2, len);
+      o.connect(g).connect(f);
+      o.start(st);
+      o.stop(st + len + 0.05);
+    });
+    return 2;
   },
 
   click: (a, out, t) => {
@@ -348,8 +490,15 @@ const RECIPES: Record<Sound, Recipe> = {
     a.tone(out, t, { from: 1400 * p, peak: 0.18, decay: 0.035 });
     return 0.05;
   },
-  win: notes([523.3, 659.3, 784, 1046.5, 784, 1046.5], 0.11, 'triangle', 0.25, 0.4),
-  lose: notes([392, 349.2, 311.1, 261.6], 0.18, 'triangle', 0.2, 0.4),
+  win: (a, out, t) => {
+    // Ta-da fanfare with a drum hit.
+    notes([523.3, 523.3, 523.3, 659.3, 784, 1046.5], 0.1, 'square', 0.09, 0.3)(a, out, t, 1);
+    notes([261.6, 329.6, 392], 0, 'triangle', 0.15, 1.1)(a, out, t + 0.6, 1);
+    notes([523.3, 659.3, 784, 1046.5], 0, 'sawtooth', 0.05, 1.1)(a, out, t + 0.6, 1);
+    a.burst(out, t + 0.6, { type: 'highpass', from: 3000, peak: 0.25, decay: 0.6 });
+    return 1.8;
+  },
+  lose: (a, out, t, p) => RECIPES.sadTrombone(a, out, t, p),
   place: (a, out, t, p) => {
     a.tone(out, t, { from: 640 * p, to: 320, peak: 0.25, decay: 0.08 });
     return 0.1;

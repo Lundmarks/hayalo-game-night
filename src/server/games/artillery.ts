@@ -1,17 +1,31 @@
 import { fire, grounded, Sim, walk, WORM_R, FPS } from '../../shared/artillery/sim.ts';
-import { Terrain, W, WATER_Y } from '../../shared/artillery/terrain.ts';
+import { MAT, Terrain, W, WATER_Y } from '../../shared/artillery/terrain.ts';
 import { TEAM_COLORS, WEAPONS, WEAPON_BY_ID, type ArtEvent, type ArtState, type Timeline, type WeaponId } from '../../shared/artillery/types.ts';
 import { QUIET, type GameContext, type GameModule } from './module.ts';
 
 const MAX_TEAMS = 6;
-const WALK_BUDGET = 170;
-const JUMP_COST = 25;
 // How long a player can be disconnected mid-match before their team forfeits.
 const GRACE_MS = 60_000;
-const WORM_NAMES = [
-  'Bale', 'Straw', 'Pitchfork', 'Haystack', 'Clover', 'Barley', 'Oats', 'Thistle', 'Rye', 'Sprout', 'Scarecrow', 'Tractor',
-  'Muddy', 'Wheat', 'Harvest', 'Acorn', 'Turnip', 'Biscuit', 'Pickle', 'Nugget', 'Waffle', 'Noodle', 'Pebble', 'Rusty',
+
+// Worms are named after politicians: the admired and the infamous, mixed
+// together so every team gets a bit of both.
+export const HEROES = [
+  'Lincoln', 'Churchill', 'Mandela', 'Gandhi', 'JFK', 'FDR', 'Obama', 'Merkel', 'Washington', 'Palme', 'Thatcher',
+  'Reagan', 'de Gaulle', 'Zelensky', 'Ardern', 'Teddy', 'Bismarck', 'Kekkonen', 'Havel', 'Lula', 'Macron', 'Trudeau',
 ];
+export const VILLAINS = [
+  'Stalin', 'Mussolini', 'Pol Pot', 'Idi Amin', 'Kim Jong-un', 'Putin', 'Mao', 'Caligula', 'Nero', 'Gaddafi',
+  'Saddam', 'Ceaușescu', 'Franco', 'Pinochet', 'Mugabe', 'Lukashenko', 'Nixon', 'Robespierre', 'Napoleon', 'Assad',
+];
+
+/** Alternate heroes and villains so each team gets some of both. */
+export function politicianNames(n: number) {
+  const h = shuffle([...HEROES]);
+  const v = shuffle([...VILLAINS]);
+  const out: string[] = [];
+  for (let i = 0; out.length < n; i++) out.push(i % 2 ? v[(i >> 1) % v.length] : h[(i >> 1) % h.length]);
+  return out;
+}
 
 // Things the server needs but clients don't (kept out of the broadcast state).
 type Private = { terrain: Terrain | null; lastWalk: number; busyUntil: number };
@@ -55,23 +69,33 @@ function startMatch(s: ArtState, ctx: GameContext) {
   // Spread worms across the island, teams mixed together.
   const total = s.teams.length * s.wormsPerTeam;
   const slots = shuffle(Array.from({ length: total }, (_, i) => i));
-  const names = shuffle([...WORM_NAMES]);
+  // Teams own consecutive ids, so alternating names give every team both kinds.
+  const names = politicianNames(total);
+  // Bare, fairly flat ground (not the side of a tree), away from other worms.
+  const goodSpot = (x: number, spacing: number) => {
+    const top = terrain.surfaceY(x);
+    const y = top - WORM_R - 1;
+    if (y >= WATER_Y - 40 || Math.abs(terrain.surfaceY(x - 6) - terrain.surfaceY(x + 6)) > 10) return null;
+    if (spacing && terrain.mat[top * W + x] !== MAT.DIRT && terrain.mat[top * W + x] !== MAT.GIRDER) return null;
+    return s.worms.some((o) => Math.abs(o.x - x) < spacing && Math.abs(o.y - y) < 30) ? null : y;
+  };
   s.worms = [];
-  let id = 0;
-  for (let ti = 0; ti < s.teams.length; ti++) {
-    for (let k = 0; k < s.wormsPerTeam; k++) {
-      const slot = slots[id];
-      const lane = (W - 260) / total;
-      let x = 130;
-      let y = 0;
-      for (let attempt = 0; attempt < 40; attempt++) {
-        x = Math.round(130 + lane * slot + Math.random() * lane);
-        y = terrain.surfaceY(x) - WORM_R - 1;
-        if (y < WATER_Y - 40) break;
-      }
-      s.worms.push({ id, team: ti, name: names[id % names.length], x, y, hp: 100, alive: true, facing: x < W / 2 ? 1 : -1 });
-      id++;
+  const lane = (W - 260) / total;
+  for (let id = 0; id < total; id++) {
+    let x = 0;
+    let y: number | null = null;
+    for (let attempt = 0; attempt < 40 && y === null; attempt++) {
+      x = Math.round(130 + lane * slots[id] + Math.random() * lane);
+      y = goodSpot(x, 24);
     }
+    // Lane is all sea (or crowded): anywhere on land will do, then even right next to someone.
+    for (let attempt = 0; attempt < 600 && y === null; attempt++) {
+      x = Math.round(40 + Math.random() * (W - 80));
+      y = goodSpot(x, attempt < 300 ? 18 : 0);
+    }
+    if (y === null) y = terrain.surfaceY(x) - WORM_R - 1;
+    const team = Math.floor(id / s.wormsPerTeam);
+    s.worms.push({ id, team, name: names[id], x, y, hp: 100, alive: true, facing: x < W / 2 ? 1 : -1 });
   }
   s.turn = null;
   nextTurn(s, ctx, Math.floor(Math.random() * s.teams.length) - 1);
@@ -146,7 +170,6 @@ function nextTurn(s: ArtState, ctx: GameContext, from = s.turn?.team ?? -1) {
     team,
     wormId: worm.id,
     endsAt: Date.now() + s.turnSeconds * 1000,
-    walkLeft: WALK_BUDGET,
     angle: worm.facing === 1 ? -0.8 : -Math.PI + 0.8,
     power: 0.6,
     weapon: 'bazooka',
@@ -273,27 +296,21 @@ export const artillery: GameModule<ArtState> = {
         p.lastWalk = now;
         const dir = a.dir === -1 ? -1 : 1;
         const worm = currentWorm(s)!;
-        const turn = s.turn!;
         worm.facing = dir;
-        if (turn.walkLeft > 0) {
-          const { moved, fell } = walk(p.terrain!, worm, dir, Math.min(3, turn.walkLeft));
-          turn.walkLeft -= moved;
-          if (fell) {
-            runSim(s, ctx, new Sim(p.terrain!, s.worms, s.craters, s.wind), false);
-            return;
-          }
+        // No walking budget: like the classic game, the turn clock is the limit.
+        const { fell } = walk(p.terrain!, worm, dir, 3);
+        if (fell) {
+          runSim(s, ctx, new Sim(p.terrain!, s.worms, s.craters, s.wind), false);
+          return;
         }
-        ctx.emit({ type: 'walk', wormId: worm.id, x: worm.x, y: worm.y, facing: worm.facing, walkLeft: turn.walkLeft } satisfies ArtEvent);
+        ctx.emit({ type: 'walk', wormId: worm.id, x: worm.x, y: worm.y, facing: worm.facing } satisfies ArtEvent);
         return QUIET;
       }
 
       case 'jump': {
         if (!isMyTurn(s, pid) || now < p.busyUntil) return QUIET;
         const worm = currentWorm(s)!;
-        const turn = s.turn!;
         if (!grounded(p.terrain!, worm)) return QUIET;
-        if (turn.walkLeft < JUMP_COST) return 'Out of moves for this turn';
-        turn.walkLeft -= JUMP_COST;
         const sim = new Sim(p.terrain!, s.worms, s.craters, s.wind);
         sim.jump(worm);
         runSim(s, ctx, sim, false);

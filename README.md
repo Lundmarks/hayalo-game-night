@@ -51,7 +51,14 @@ the next person becomes host.
   timeline of positions and events. Every client plays the same timeline, so
   everyone sees and hears the same thing, and nobody can fake a hit.
 - The map is rebuilt from a seed plus a crater list (`terrain.ts`), so the network
-  never carries pixels.
+  never carries pixels. The seed also picks a theme (meadow, hay farm, desert, snow,
+  candy) and a shape (island, twin isles, archipelago, mountain, terraces, sky
+  islands). Scenery (trees, hay bales, cacti, snowmen, lollipops, girder bridges)
+  is part of the terrain, so it blocks shots and can be blown up.
+- Worms are named after politicians, admired and infamous mixed, and some wear a
+  matching hat (`render.ts` has the name-to-hat table).
+- Walking is limited only by the turn clock. Grenades and the Holy Hay Bomb roll
+  along the ground and bounce off worms.
 - Controls: drag on the map to aim (distance = power), Space/FIRE to shoot,
   ←/→ or the buttons to walk, J to jump, W/S angle, Q/E power, 1–7 weapons.
 
