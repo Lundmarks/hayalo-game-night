@@ -8,6 +8,10 @@ Games:
 - **Hay, Where?**: everyone gets the same photo and drops a pin where they think it
   was taken. Closest wins, with a bonus for being quick.
 
+The games are built for desktop Discord (and desktop browsers). Phones aren't
+supported yet: some screens have a basic phone layout, but nothing is tuned or
+tested for it.
+
 ## Setup
 
 1. `npm install`

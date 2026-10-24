@@ -18,6 +18,12 @@ README.md covers setup, Discord portal config, and architecture. Read it first.
   themselves; commit locally, never push.
 - `.env` holds the real Discord secret. Never print or commit it.
 
+## Scope
+
+- **Desktop only for now.** Phones and tablets are not a target, so don't spend
+  time on mobile layouts or touch controls, and don't let them hold back desktop
+  features. The existing phone CSS and touch buttons can stay; just don't extend them.
+
 ## Architecture rules
 
 - **Server is authoritative.** Games are `GameModule`s in `src/server/games/`
