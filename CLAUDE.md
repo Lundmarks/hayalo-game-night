@@ -73,8 +73,8 @@ Working:
 - Hay-Tac-Toe: seats, spectators, win/draw tracking, rematch swaps sides.
 - Hayalo Artillery: lobby (1–6 teams, 1–4 worms each, 30/45/60s turns), solo
   practice, procedurally generated island with caves and ledges, destructible
-  terrain, wind, walking/jumping, fall damage, drowning, 7 weapons (bazooka,
-  grenade, shotgun, cluster, air strike, Holy Hay Bomb, teleport), camera that
+  terrain, wind, walking/jumping, fall damage, drowning, 16 weapons (see the
+  weapons round below), camera that
   follows the action on narrow screens, keyboard + touch controls, synthesized
   audio with panning. Surrender (tap twice), forfeit after 60s disconnected,
   turn clock paused during jump/fall animations, per-team worm rotation by id.
@@ -97,6 +97,14 @@ Working:
   server waits `killCamExtraMs`), turn intro card + zoom, faint trail of your last
   shot, graves that fall and show names, drawn weapon icons, end screen with
   awards from `s.stats` (`recordStats()` on the server).
+- Artillery weapons round (2026-10-25): 16 weapons (`WEAPONS` has `phrase` for the
+  end screen and `aim: 'angle' | 'target' | 'none'`). New sim pieces: `stepSheep`,
+  `cloud()` (stink/medic, no crater, `heal` event), `bat()` (`melee` event),
+  `everyone()` (`ping`/`zap` events). Grenade and fall damage buffed. Hurting
+  yourself mid-turn ends the turn (`runMoveSim`); `crateSpot` keeps drops 45px
+  from worms. Backdrop/water/clouds extend to the visible range on wide screens
+  (`drawBackdrop`, `visX0/visX1`). Hay bomb sounds: `truddelutt`, `holy`, `hayalo`.
+  Tests for these are in `tests/weapons.test.ts`.
 - Hay, Where? (geoguess): Wikimedia Commons photos, Leaflet + OSM map, rounds
   3/5/10, 30/60/90s, 15s rush after the first lock-in, speed bonus, reveal map
   with all pins, auto-advance, host skip/next/end, click-to-zoom photo, phone layout

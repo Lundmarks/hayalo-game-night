@@ -470,15 +470,35 @@ export function drawBird(ctx: CanvasRenderingContext2D, x: number, y: number, ti
   ctx.lineCap = 'butt';
 }
 
-export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: number, pal: Palette, level = WATER_Y) {
+/**
+ * Distant hills across [x0, x1] (world x): the map's own backdrop in the
+ * middle, mirrored copies to the sides, so wide screens don't show an edge.
+ */
+export function drawBackdrop(ctx: CanvasRenderingContext2D, backdrop: HTMLCanvasElement, x0: number, x1: number) {
+  for (let i = Math.floor(x0 / W); i <= Math.floor(x1 / W); i++) {
+    if (i % 2 === 0) {
+      ctx.drawImage(backdrop, i * W, 0);
+      continue;
+    }
+    ctx.save();
+    ctx.translate((i + 1) * W, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(backdrop, 0, 0);
+    ctx.restore();
+  }
+}
+
+export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: number, pal: Palette, level = WATER_Y, x0 = -200, x1 = W + 200) {
+  x0 = Math.floor(Math.min(-200, x0) / 10) * 10;
+  x1 = Math.max(W + 200, x1);
   const wave = (x: number, t: number) => level + Math.sin(x / 40 + t * 2) * 3 + Math.sin(x / 17 - t * 3) * 1.5;
   // A darker wave behind for depth.
   ctx.fillStyle = pal.water[1];
   ctx.globalAlpha = 0.6;
   ctx.beginPath();
-  ctx.moveTo(-200, bottom);
-  for (let x = -200; x <= W + 200; x += 10) ctx.lineTo(x, wave(x + 30, time * 0.8 + 1) - 5);
-  ctx.lineTo(W + 200, bottom);
+  ctx.moveTo(x0, bottom);
+  for (let x = x0; x <= x1; x += 10) ctx.lineTo(x, wave(x + 30, time * 0.8 + 1) - 5);
+  ctx.lineTo(x1, bottom);
   ctx.fill();
   ctx.globalAlpha = 1;
 
@@ -488,17 +508,17 @@ export function drawWater(ctx: CanvasRenderingContext2D, time: number, bottom: n
   ctx.fillStyle = g;
   ctx.globalAlpha = 0.92;
   ctx.beginPath();
-  ctx.moveTo(-200, bottom);
-  for (let x = -200; x <= W + 200; x += 10) ctx.lineTo(x, wave(x, time));
-  ctx.lineTo(W + 200, bottom);
+  ctx.moveTo(x0, bottom);
+  for (let x = x0; x <= x1; x += 10) ctx.lineTo(x, wave(x, time));
+  ctx.lineTo(x1, bottom);
   ctx.fill();
   ctx.globalAlpha = 1;
   ctx.strokeStyle = pal.foam;
   ctx.lineWidth = 3;
   ctx.beginPath();
-  for (let x = -200; x <= W + 200; x += 10) {
+  for (let x = x0; x <= x1; x += 10) {
     const y = wave(x, time);
-    if (x === -200) ctx.moveTo(x, y);
+    if (x === x0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
@@ -940,12 +960,252 @@ export function drawGrave(ctx: CanvasRenderingContext2D, x: number, y: number) {
   ctx.restore();
 }
 
+// Shapes for the newer weapons, drawn around (0,0) at in-game size. The
+// weapon icons reuse them, scaled up.
+const ART = {
+  sheep(ctx: CanvasRenderingContext2D, time: number, walking = true) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.3;
+    // legs
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 2;
+    for (const [lx, ph] of [[-4, 0], [-1.5, Math.PI], [2.5, Math.PI], [5, 0]] as const) {
+      const sw = walking ? Math.sin(time * 16 + ph) * 1.6 : 0;
+      ctx.beginPath();
+      ctx.moveTo(lx, 3);
+      ctx.lineTo(lx + sw, 7);
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    ctx.lineWidth = 1.3;
+    // woolly body
+    const puffs: [number, number, number][] = [[-5, -1, 3.6], [-2, -3, 3.8], [2, -3, 3.8], [4, 0, 3.4], [0, 1, 3.8], [-4, 2, 3]];
+    ctx.beginPath();
+    for (const [px, py, r] of puffs) ctx.moveTo(px + r, py), ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#f6f3ea';
+    ctx.beginPath();
+    for (const [px, py, r] of puffs) ctx.moveTo(px + r, py), ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fill();
+    // head
+    ctx.fillStyle = '#3a3040';
+    ctx.beginPath();
+    ctx.ellipse(8, -2.5, 3.2, 2.6, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(6, -5, 1.8, 0.9, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(9, -3.2, 0.9, 0, Math.PI * 2);
+    ctx.fill();
+  },
+  duck(ctx: CanvasRenderingContext2D) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.3;
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath();
+    ctx.ellipse(-1, 2, 7, 4.6, 0, 0, Math.PI * 2);
+    ctx.moveTo(-6, 0);
+    ctx.lineTo(-9, -3);
+    ctx.lineTo(-5, -1);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(3, -4, 3.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ff8a3d';
+    ctx.beginPath();
+    ctx.ellipse(7.5, -3.3, 2.6, 1.3, 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.arc(4, -5, 0.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.ellipse(-3, 0.5, 2.5, 1.2, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+  },
+  banana(ctx: CanvasRenderingContext2D) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.3;
+    ctx.fillStyle = '#ffe14d';
+    ctx.beginPath();
+    ctx.arc(0, -6, 10, 0.18 * Math.PI, 0.82 * Math.PI);
+    ctx.arc(0, -10, 10.5, 0.75 * Math.PI, 0.25 * Math.PI, true);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#6b4a1c';
+    ctx.beginPath();
+    ctx.arc(8.2, 0, 1.3, 0, Math.PI * 2);
+    ctx.arc(-8.2, 0, 1.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(160,110,20,0.6)';
+    ctx.beginPath();
+    ctx.arc(0, -6.5, 8, 0.3 * Math.PI, 0.7 * Math.PI);
+    ctx.stroke();
+  },
+  syringe(ctx: CanvasRenderingContext2D) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(4, 0);
+    ctx.lineTo(11, 0);
+    ctx.stroke();
+    ctx.fillStyle = '#e8f6ff';
+    ctx.beginPath();
+    ctx.rect(-7, -2.4, 11, 4.8);
+    ctx.fill();
+    ctx.fillStyle = '#7cf29a';
+    ctx.fillRect(-1, -2.4, 5, 4.8);
+    ctx.strokeRect(-7, -2.4, 11, 4.8);
+    ctx.fillStyle = '#c8c8d0';
+    ctx.beginPath();
+    ctx.rect(-11, -0.9, 4, 1.8);
+    ctx.rect(-12, -3.4, 1.5, 6.8);
+    ctx.fill();
+    ctx.stroke();
+  },
+  rose(ctx: CanvasRenderingContext2D) {
+    ctx.strokeStyle = '#2f7a2a';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(-11, 0);
+    ctx.lineTo(0, 0);
+    ctx.stroke();
+    ctx.fillStyle = '#4fae3a';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(-6, -2.5, 3, 1.4, -0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.lineWidth = 1.3;
+    for (const [px, py, r, c] of [[3, 0, 4.6, '#c4162a'], [3.5, -0.6, 3.2, '#e8213a'], [4, -1, 1.6, '#ff5a6e']] as const) {
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fill();
+      if (r > 4) ctx.stroke();
+    }
+  },
+  house(ctx: CanvasRenderingContext2D) {
+    // A little Falu-red cottage with white corners.
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.4;
+    ctx.fillStyle = '#b5322b';
+    ctx.beginPath();
+    ctx.rect(-10, -4, 20, 13);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-10, -4, 2, 13);
+    ctx.fillRect(8, -4, 2, 13);
+    ctx.fillStyle = '#3d3540';
+    ctx.beginPath();
+    ctx.moveTo(-13, -3);
+    ctx.lineTo(0, -13);
+    ctx.lineTo(13, -3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-6, -1, 5, 5);
+    ctx.fillStyle = '#9fd8ff';
+    ctx.fillRect(-5.2, -0.2, 3.4, 3.4);
+    ctx.fillStyle = '#5a3a20';
+    ctx.fillRect(2.5, 1, 4, 8);
+    ctx.strokeRect(2.5, 1, 4, 8);
+    // chimney
+    ctx.fillStyle = '#b5322b';
+    ctx.fillRect(5, -12, 3, 5);
+    ctx.strokeRect(5, -12, 3, 5);
+  },
+  can(ctx: CanvasRenderingContext2D) {
+    // A bulging tin of surströmming.
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.3;
+    ctx.fillStyle = '#c9ced8';
+    ctx.beginPath();
+    ctx.moveTo(-7, -4);
+    ctx.quadraticCurveTo(0, -8, 7, -4);
+    ctx.lineTo(7, 4);
+    ctx.quadraticCurveTo(0, 8, -7, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#2f5fb3';
+    ctx.fillRect(-7, -2, 14, 4);
+    // A little fish on the label.
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath();
+    ctx.ellipse(-1, 0, 3.2, 1.5, 0, 0, Math.PI * 2);
+    ctx.moveTo(1.8, 0);
+    ctx.lineTo(4.6, -1.7);
+    ctx.lineTo(4.6, 1.7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#2f5fb3';
+    ctx.fillRect(-3.2, -0.5, 0.9, 0.9);
+  },
+};
+
 export function drawProjectile(ctx: CanvasRenderingContext2D, kind: ProjKind, x: number, y: number, angle: number, time: number) {
   ctx.save();
   ctx.translate(x, y);
   ctx.strokeStyle = INK;
   ctx.lineWidth = 1.4;
   switch (kind) {
+    case 'sheep': {
+      const moving = Math.abs(Math.cos(angle)) > 0.05;
+      ctx.scale(Math.cos(angle) < 0 ? -1.25 : 1.25, 1.25);
+      ART.sheep(ctx, time, moving);
+      break;
+    }
+    case 'duck':
+      ctx.rotate(Math.sin(time * 9) * 0.5);
+      ART.duck(ctx);
+      break;
+    case 'banana':
+      ctx.rotate(time * 7);
+      ART.banana(ctx);
+      break;
+    case 'minibanana':
+      ctx.rotate(time * 9);
+      ctx.scale(0.6, 0.6);
+      ART.banana(ctx);
+      break;
+    case 'syringe':
+      ctx.rotate(angle);
+      ART.syringe(ctx);
+      break;
+    case 'rose':
+      ctx.rotate(angle);
+      ART.rose(ctx);
+      break;
+    case 'petal':
+      ctx.rotate(time * 6 + x);
+      ctx.fillStyle = '#e8213a';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 4, 2.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      break;
+    case 'house':
+      ctx.rotate(Math.sin(time * 5) * 0.08);
+      ctx.scale(1.4, 1.4);
+      ART.house(ctx);
+      break;
+    case 'can':
+      ctx.rotate(time * 6);
+      ART.can(ctx);
+      break;
     case 'rocket':
     case 'missile': {
       ctx.rotate(angle);
@@ -1100,7 +1360,9 @@ export function drawPlane(ctx: CanvasRenderingContext2D, x: number, y: number, d
 
 // ---- particles ----
 
-type Kind = 'spark' | 'debris' | 'puff' | 'flash' | 'burst' | 'ring' | 'drop' | 'line' | 'star' | 'confetti' | 'bubble' | 'ray' | 'ripple';
+type Kind =
+  | 'spark' | 'debris' | 'puff' | 'flash' | 'burst' | 'ring' | 'drop' | 'line' | 'star' | 'confetti' | 'bubble' | 'ray' | 'ripple'
+  | 'plus' | 'swish' | 'bolt' | 'stinkline';
 type Particle = {
   x: number;
   y: number;
@@ -1198,6 +1460,36 @@ export class Particles {
         max: rnd(0.4, 0.7), size: rnd(3, 6) * Math.min(1.6, strength), color: '232,220,200', kind: 'puff',
       });
     }
+  }
+
+  /** A lingering cloud: green stink, or the doctor's pink dose with little plus signs. */
+  cloud(x: number, y: number, r: number, kind: 'stink' | 'medic') {
+    const colors = kind === 'stink' ? ['150,190,80', '120,165,60', '185,210,110'] : ['255,190,215', '255,225,235', '210,255,220'];
+    for (let i = 0; i < 18; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.random() * r * 0.8;
+      this.add({
+        x: x + Math.cos(a) * d, y: y + Math.sin(a) * d * 0.7, vx: Math.cos(a) * rnd(10, 30), vy: -rnd(5, 20),
+        max: rnd(1.4, 2.2), size: rnd(r * 0.22, r * 0.4), color: colors[i % 3], kind: 'puff', delay: rnd(0, 0.25),
+      });
+    }
+    for (let i = 0; i < 9; i++) {
+      const px = x + rnd(-r, r) * 0.8;
+      const py = y + rnd(-r, r) * 0.5;
+      if (kind === 'medic') this.add({ x: px, y: py, vx: 0, vy: -rnd(20, 40), max: rnd(1, 1.6), size: rnd(4, 6), color: '#ff4d6d', kind: 'plus', delay: rnd(0, 0.5) });
+      else this.add({ x: px, y: py, vx: 0, vy: -rnd(15, 30), max: rnd(1.2, 1.8), size: rnd(6, 9), color: '#5d7a24', kind: 'stinkline', delay: rnd(0, 0.6) });
+    }
+  }
+
+  /** The arc of a bat swing. */
+  swish(x: number, y: number, angle: number) {
+    this.add({ x, y, vx: 0, vy: 0, max: 0.25, size: 24, color: '#ffffff', kind: 'swish', rot: angle });
+  }
+
+  /** Lightning from the top of the sky down to x,y. */
+  bolt(x: number, y: number) {
+    this.add({ x, y: -60, x2: x, y2: y, vx: 0, vy: 0, max: 0.45, size: 3, color: '#fff7a8', kind: 'bolt', rot: Math.random() * 100 });
+    this.add({ x, y, vx: 0, vy: 0, max: 0.2, size: 30, color: '#fff', kind: 'flash' });
   }
 
   muzzle(x: number, y: number, angle: number) {
@@ -1377,6 +1669,67 @@ export class Particles {
           ctx.globalAlpha = 1;
           break;
         }
+        case 'plus': {
+          ctx.globalAlpha = Math.min(1, k * 2);
+          ctx.fillStyle = p.color;
+          const a = p.size;
+          const b = p.size * 0.36;
+          ctx.fillRect(p.x - a / 2, p.y - b / 2, a, b);
+          ctx.fillRect(p.x - b / 2, p.y - a / 2, b, a);
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case 'stinkline': {
+          // Cartoon wavy stink line.
+          ctx.globalAlpha = Math.min(1, k * 2) * 0.85;
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          for (let i = 0; i <= 8; i++) {
+            const yy = p.y - (i / 8) * p.size * 2;
+            const xx = p.x + Math.sin(i * 1.3 + p.life * 8) * 2.5;
+            if (i) ctx.lineTo(xx, yy);
+            else ctx.moveTo(xx, yy);
+          }
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          break;
+        }
+        case 'swish': {
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.rot ?? 0);
+          ctx.strokeStyle = `rgba(255,255,255,${k * 0.9})`;
+          ctx.lineCap = 'round';
+          for (let i = 0; i < 3; i++) {
+            ctx.lineWidth = 4 - i;
+            ctx.beginPath();
+            ctx.arc(0, 0, p.size - i * 5, -1.3 + t * 0.6, 0.6 + t * 0.6);
+            ctx.stroke();
+          }
+          ctx.lineCap = 'butt';
+          ctx.restore();
+          break;
+        }
+        case 'bolt': {
+          // A jagged bolt that flickers.
+          const pts: [number, number][] = [];
+          const n = 9;
+          for (let i = 0; i <= n; i++) {
+            const yy = p.y + ((p.y2! - p.y) * i) / n;
+            const jag = i === 0 || i === n ? 0 : (hash(i, Math.floor(p.rot! + p.life * 20)) - 0.5) * 26;
+            pts.push([p.x + jag, yy]);
+          }
+          for (const [w, c] of [[p.size * 3, `rgba(140, 170, 255, ${k * 0.5})`], [p.size, `rgba(255, 250, 200, ${k})`]] as const) {
+            ctx.strokeStyle = c;
+            ctx.lineWidth = w;
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            pts.forEach(([xx, yy], i) => (i ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy)));
+            ctx.stroke();
+          }
+          break;
+        }
         case 'bubble':
           ctx.strokeStyle = `rgba(232,248,255,${k})`;
           ctx.lineWidth = 1;
@@ -1540,6 +1893,106 @@ export function weaponIcon(id: WeaponId) {
       for (const [x, y, r] of [[19, -16, 4], [-20, 15, 3]]) outlined('#c9f3ff', 1.5, () => ctx.arc(x, y, r, 0, Math.PI * 2));
       break;
     }
+    case 'bat':
+      ctx.rotate(-0.75);
+      outlined('#c98d4a', 3, () => {
+        ctx.moveTo(-24, -2.5);
+        ctx.lineTo(8, -6);
+        ctx.quadraticCurveTo(25, -7, 25, 0);
+        ctx.quadraticCurveTo(25, 7, 8, 6);
+        ctx.lineTo(-24, 2.5);
+        ctx.closePath();
+      });
+      outlined('#2b1d33', 2, () => ctx.rect(-27, -3.5, 4, 7));
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillRect(-18, -2.5, 34, 2);
+      outlined('#e8e4da', 2, () => ctx.rect(-22, -3, 8, 6));
+      break;
+    case 'banana':
+      ctx.rotate(-0.4);
+      ctx.scale(3.2, 3.2);
+      ctx.translate(0, 3);
+      ART.banana(ctx);
+      break;
+    case 'doctor':
+      // Syringe over a red cross.
+      ctx.fillStyle = '#ff4d6d';
+      ctx.fillRect(-9, -25, 18, 50);
+      ctx.fillRect(-25, -9, 50, 18);
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(-9, -25, 18, 50);
+      ctx.strokeRect(-25, -9, 50, 18);
+      ctx.fillStyle = '#ff4d6d';
+      ctx.fillRect(-7.7, -7.7, 15.4, 15.4);
+      ctx.rotate(-0.75);
+      ctx.scale(2.2, 2.2);
+      ART.syringe(ctx);
+      break;
+    case 'sheep':
+      ctx.scale(2.5, 2.5);
+      ctx.translate(-1, -1);
+      ART.sheep(ctx, 0, false);
+      break;
+    case 'rose':
+      ctx.rotate(-0.8);
+      ctx.scale(2.4, 2.4);
+      ctx.translate(1, 0);
+      ART.rose(ctx);
+      break;
+    case 'folkhem':
+      ctx.scale(2.2, 2.2);
+      ctx.translate(0, 2);
+      ART.house(ctx);
+      break;
+    case 'surstromming':
+      ctx.save();
+      ctx.scale(2.6, 2.6);
+      ctx.translate(0, 4);
+      ART.can(ctx);
+      ctx.restore();
+      ctx.strokeStyle = '#6f9a2a';
+      ctx.lineWidth = 3;
+      for (const sx of [-10, 0, 10]) {
+        ctx.beginPath();
+        for (let i = 0; i <= 6; i++) {
+          const yy = -12 - i * 3;
+          const xx = sx + Math.sin(i * 1.4) * 3;
+          if (i) ctx.lineTo(xx, yy);
+          else ctx.moveTo(xx, yy);
+        }
+        ctx.stroke();
+      }
+      break;
+    case 'duck':
+      ctx.scale(2.6, 2.6);
+      ctx.translate(-1, 2);
+      ART.duck(ctx);
+      break;
+    case 'everyone':
+      // Hayalo's chat bubble with an @.
+      outlined('#5865f2', 3, () => {
+        ctx.roundRect(-26, -22, 52, 38, 12);
+        ctx.moveTo(-10, 15);
+        ctx.lineTo(-16, 26);
+        ctx.lineTo(0, 15);
+      });
+      ctx.fillStyle = '#fff';
+      ctx.font = '900 30px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('@', 0, -3);
+      outlined('#ffe14d', 2, () => {
+        ctx.moveTo(18, -30);
+        ctx.lineTo(12, -18);
+        ctx.lineTo(17, -18);
+        ctx.lineTo(13, -8);
+        ctx.lineTo(23, -22);
+        ctx.lineTo(18, -22);
+        ctx.lineTo(22, -30);
+        ctx.closePath();
+      });
+      break;
   }
   const url = c.toDataURL();
   iconCache.set(id, url);

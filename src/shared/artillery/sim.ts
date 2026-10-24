@@ -15,7 +15,7 @@ export const MAX_SPEED = 820;
 export const WIND_ACC = 190;
 export const WORM_R = 9;
 export const MAX_CLIMB = 5;
-const FALL_SAFE = 430;
+const FALL_SAFE = 340; // landing faster than this (px/s) hurts
 export const CRATE_R = 8; // half the crate's size
 const PARA_SPEED = 170; // crates float down this fast (px/s)
 export const FLOOD_FRAMES = 90; // how long the water takes to rise each turn
@@ -23,17 +23,35 @@ export const FLOOD_FRAMES = 90; // how long the water takes to rise each turn
 export type SimInput = { f: number; wormId: number; kind: 'walk' | 'jump'; dir: 1 | -1 };
 type SimOpts = { water?: number; seed?: number; crates?: Crate[] };
 
-type ProjSpec = { radius: number; damage: number; fuse: number; bouncy: boolean; wind: boolean };
+// radius 0 = no crater (the effect is handled in detonate). bounce: how much
+// speed a bouncy one keeps off the ground.
+type ProjSpec = { radius: number; damage: number; fuse: number; bouncy: boolean; wind: boolean; bounce?: number; gravity?: number };
 const PROJ: Record<ProjKind, ProjSpec> = {
   rocket: { radius: 30, damage: 45, fuse: 0, bouncy: false, wind: true },
-  grenade: { radius: 34, damage: 50, fuse: 3 * FPS, bouncy: true, wind: false },
+  grenade: { radius: 40, damage: 60, fuse: 3 * FPS, bouncy: true, wind: false },
   cluster: { radius: 18, damage: 20, fuse: 0, bouncy: false, wind: true },
   bomblet: { radius: 16, damage: 18, fuse: 0, bouncy: false, wind: false },
   missile: { radius: 24, damage: 28, fuse: 0, bouncy: false, wind: false },
   haybomb: { radius: 64, damage: 75, fuse: 4 * FPS, bouncy: true, wind: false },
+  banana: { radius: 38, damage: 40, fuse: 3 * FPS, bouncy: true, wind: false, bounce: 0.6 },
+  minibanana: { radius: 26, damage: 26, fuse: Math.round(1.6 * FPS), bouncy: true, wind: false, bounce: 0.6 },
+  syringe: { radius: 0, damage: 22, fuse: 0, bouncy: false, wind: false, gravity: 0.7 },
+  sheep: { radius: 50, damage: 60, fuse: 6 * FPS, bouncy: false, wind: false },
+  rose: { radius: 20, damage: 18, fuse: 0, bouncy: false, wind: true },
+  petal: { radius: 17, damage: 16, fuse: 0, bouncy: false, wind: true, gravity: 0.55 },
+  house: { radius: 46, damage: 55, fuse: 0, bouncy: false, wind: false },
+  can: { radius: 0, damage: 24, fuse: 0, bouncy: false, wind: true },
+  duck: { radius: 38, damage: 48, fuse: 5 * FPS, bouncy: true, wind: false, bounce: 0.82 },
 };
 
-type Proj = { kind: ProjKind; x: number; y: number; vx: number; vy: number; age: number; owner: number; track: Track; dead: boolean };
+const SHEEP_SPEED = 80; // px/s
+const MEDIC_HEAL = 30;
+
+type Proj = {
+  kind: ProjKind; x: number; y: number; vx: number; vy: number; age: number; owner: number; track: Track; dead: boolean;
+  dir?: 1 | -1; // a sheep's walking direction
+  hops?: number;
+};
 type Mover = { worm: Worm; vx: number; vy: number; track: Track };
 type CrateMover = { c: Crate; vy: number; para: boolean; track: Track };
 
@@ -190,7 +208,77 @@ export class Sim {
   }
 
   launch(kind: ProjKind, x: number, y: number, vx: number, vy: number, owner: number) {
-    this.projs.push({ kind, x, y, vx, vy, age: 0, owner, track: this.track(kind, x, y), dead: false });
+    const p: Proj = { kind, x, y, vx, vy, age: 0, owner, track: this.track(kind, x, y), dead: false };
+    this.projs.push(p);
+    return p;
+  }
+
+  private teamOf(wormId: number) {
+    return this.worms.find((w) => w.id === wormId)?.team ?? -1;
+  }
+
+  private hurt(w: Worm, amount: number) {
+    w.hp = Math.max(0, w.hp - amount);
+    this.event({ type: 'damage', x: w.x, y: w.y, wormId: w.id, amount });
+  }
+
+  /** A cloud with no crater: stink hurts everyone in it, the doctor's dose heals the owner's team. */
+  cloud(x: number, y: number, kind: 'stink' | 'medic', owner: number, damage: number) {
+    const r = kind === 'stink' ? 62 : 56;
+    this.event({ type: 'cloud', x, y, r, kind });
+    const team = this.teamOf(owner);
+    for (const w of this.worms) {
+      if (!w.alive || Math.hypot(w.x - x, w.y - y) > r + WORM_R) continue;
+      if (kind === 'medic' && w.team === team) {
+        const amount = Math.max(0, Math.min(MAX_HP, w.hp + MEDIC_HEAL) - w.hp);
+        if (!amount) continue;
+        w.hp += amount;
+        this.event({ type: 'heal', x: w.x, y: w.y, wormId: w.id, amount });
+      } else {
+        this.hurt(w, damage);
+        // A little hop of disgust.
+        this.knock(w, Math.sign(w.x - x || 1) * 60, -120);
+      }
+    }
+  }
+
+  /** Baseball bat: whack the first worm in reach towards `angle`. */
+  bat(w: Worm, angle: number) {
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    this.event({ type: 'melee', x: w.x, y: w.y, x2: w.x + dx * 26, y2: w.y + dy * 26, wormId: w.id });
+    let hit: Worm | undefined;
+    for (let d = 6; d <= 24 && !hit; d += 2) {
+      const px = w.x + dx * d;
+      const py = w.y + dy * d;
+      hit = this.worms.find((o) => o.alive && o !== w && Math.hypot(o.x - px, o.y - py) < WORM_R + 5);
+    }
+    if (!hit) return;
+    this.hurt(hit, 30);
+    this.event({ type: 'bounce', x: hit.x, y: hit.y, wormId: hit.id, kind: 'bat' });
+    this.knock(hit, dx * 640, dy * 640 - 170);
+  }
+
+  /** Hayalo pings @everyone: lightning hits each enemy worm in turn. */
+  everyone(owner: number) {
+    const team = this.teamOf(owner);
+    const shooter = this.worms.find((w) => w.id === owner);
+    this.event({ type: 'ping', x: shooter?.x ?? W / 2, y: shooter?.y ?? 0, wormId: owner });
+    const targets = this.worms.filter((w) => w.alive && w.team !== team);
+    targets.forEach((w, i) => {
+      this.later(40 + i * 16, () => {
+        if (!w.alive) return;
+        this.event({ type: 'zap', x: w.x, y: w.y, wormId: w.id });
+        // A scorch mark and a jolt, but no blast to throw them off a cliff.
+        const cx = Math.round(w.x);
+        const cy = Math.round(w.y + WORM_R);
+        this.craters.push([cx, cy, 8]);
+        this.t.carve(cx, cy, 8);
+        this.event({ type: 'explode', x: cx, y: cy, r: 8, kind: 'zap', crater: this.craters.length - 1 });
+        this.hurt(w, 20);
+        this.knock(w, 0, -110);
+      });
+    });
   }
 
   later(frames: number, fn: () => void) {
@@ -417,10 +505,22 @@ export class Sim {
     p.dead = true;
     this.endTrack(p.track, p.x, p.y);
     const spec = PROJ[p.kind];
+    if (p.kind === 'can') return this.cloud(p.x, p.y, 'stink', p.owner, spec.damage);
+    if (p.kind === 'syringe') return this.cloud(p.x, p.y, 'medic', p.owner, spec.damage);
     this.explode(p.x, p.y, spec.radius, spec.damage, p.kind);
     if (p.kind === 'cluster') {
       for (let i = 0; i < 5; i++) {
         this.launch('bomblet', p.x, p.y - 6, (i - 2) * 75 + (this.rand() - 0.5) * 40, -240 - this.rand() * 120, -1);
+      }
+    }
+    if (p.kind === 'rose') {
+      for (let i = 0; i < 6; i++) {
+        this.launch('petal', p.x, p.y - 6, (i - 2.5) * 60 + (this.rand() - 0.5) * 40, -280 - this.rand() * 140, -1);
+      }
+    }
+    if (p.kind === 'banana') {
+      for (let i = 0; i < 5; i++) {
+        this.launch('minibanana', p.x, p.y - 8, (i - 2) * 85 + (this.rand() - 0.5) * 50, -300 - this.rand() * 140, -1);
       }
     }
   }
@@ -458,10 +558,11 @@ export class Sim {
   }
 
   private stepProj(p: Proj) {
+    if (p.kind === 'sheep') return this.stepSheep(p);
     const spec = PROJ[p.kind];
     p.age++;
-    if (spec.wind) p.vx += this.wind * WIND_ACC * DT;
-    p.vy += G * DT;
+    if (spec.wind) p.vx += this.wind * WIND_ACC * DT * (p.kind === 'petal' ? 1.8 : 1);
+    p.vy += G * DT * (spec.gravity ?? 1);
     const steps = Math.max(1, Math.ceil((Math.max(Math.abs(p.vx), Math.abs(p.vy)) * DT) / 2));
 
     for (let s = 0; s < steps; s++) {
@@ -498,12 +599,71 @@ export class Sim {
         if (!this.t.solid(px + dx, py)) p.x = px + dx;
         else if (!this.t.solid(px + dx, py - 1)) [p.x, p.y] = [px + dx, py - 1];
         const [nx, ny] = this.normal(px, py);
-        const dot = this.reflect(p, nx, ny, 0.45, 0.82);
+        const dot = this.reflect(p, nx, ny, spec.bounce ?? 0.45, 0.82);
         if (-dot > 70) this.event({ type: 'bounce', x: p.x, y: p.y, kind: p.kind });
         break;
       }
     }
     if (spec.fuse && p.age >= spec.fuse) this.detonate(p);
+  }
+
+  /** Is the sheep (centre x,y, feet 6px below) touching a worm other than its owner? */
+  private sheepHit(p: Proj) {
+    return this.worms.find((w) => w.alive && (w.id !== p.owner || p.age > 40) && Math.hypot(w.x - p.x, w.y - p.y) < WORM_R + 6);
+  }
+
+  /** A sheep walks along the ground, hops over walls, and blows up on a worm or when its fuse runs out. */
+  private stepSheep(p: Proj) {
+    const t = this.t;
+    p.age++;
+    const dir = p.dir ?? 1;
+    const feet = 6;
+    const onGround = t.solid(p.x, p.y + feet + 1) || t.solid(p.x - 3, p.y + feet + 1) || t.solid(p.x + 3, p.y + feet + 1);
+    if (onGround && p.vy >= 0) {
+      p.vy = 0;
+      p.vx = 0;
+      const nx = p.x + (dir * SHEEP_SPEED) / FPS;
+      let up = 0;
+      while (up <= 6 && t.solid(nx, p.y + feet - up)) up++;
+      if (up > 6 || t.solid(nx + dir * 6, p.y - up - 4) || nx < 4 || nx > W - 4) {
+        // A wall: hop over it. After a few tries it gives up and turns around.
+        p.hops = (p.hops ?? 0) + 1;
+        if (p.hops % 3 === 0) p.dir = -dir as 1 | -1;
+        p.vy = -250;
+        p.vx = (p.dir ?? dir) * 70;
+        this.event({ type: 'jump', x: p.x, y: p.y, kind: 'sheep' });
+      } else {
+        p.x = nx;
+        p.y -= up;
+        for (let down = 0; down < 6 && !t.solid(p.x, p.y + feet + 1); down++) p.y++;
+      }
+    } else {
+      p.vy = Math.min(700, p.vy + G * DT);
+      const steps = Math.max(1, Math.ceil((Math.max(Math.abs(p.vx), Math.abs(p.vy)) * DT) / 2));
+      for (let s = 0; s < steps; s++) {
+        const nx = p.x + (p.vx * DT) / steps;
+        const ny = p.y + (p.vy * DT) / steps;
+        // Blocked sideways: keep the speed, so it carries on once it's above the wall.
+        if (!t.solid(nx + Math.sign(p.vx) * 5, ny)) p.x = nx;
+        if (p.vy < 0 && t.solid(p.x, ny - 6)) p.vy = 0;
+        else if (p.vy > 0 && t.solid(p.x, ny + feet)) {
+          p.vy = 0;
+          break;
+        } else p.y = ny;
+      }
+    }
+    if (p.y > this.water) {
+      p.dead = true;
+      this.endTrack(p.track, p.x, this.water);
+      this.event({ type: 'splash', x: p.x, y: this.water, kind: 'sheep' });
+      return;
+    }
+    if (p.x < -50 || p.x > W + 50) {
+      p.dead = true;
+      this.endTrack(p.track, p.x, p.y);
+      return;
+    }
+    if (this.sheepHit(p) || p.age >= PROJ.sheep.fuse) this.detonate(p);
   }
 
   private land(m: Mover) {
@@ -518,7 +678,7 @@ export class Sim {
       return;
     }
     if (m.vy > FALL_SAFE) {
-      const amount = Math.min(30, Math.round((m.vy - FALL_SAFE) / 12));
+      const amount = Math.min(50, Math.round((m.vy - FALL_SAFE) / 5));
       if (amount > 0) {
         w.hp = Math.max(0, w.hp - amount);
         this.event({ type: 'damage', x: w.x, y: w.y, wormId: w.id, amount });
@@ -631,7 +791,10 @@ export function fire(sim: Sim, t: Terrain, w: Worm, weapon: WeaponId, angle: num
   const vy = Math.sin(angle) * speed;
   const mx = w.x + Math.cos(angle) * (WORM_R + 4);
   const my = w.y + Math.sin(angle) * (WORM_R + 4);
-  const kindFor: Partial<Record<WeaponId, ProjKind>> = { bazooka: 'rocket', grenade: 'grenade', cluster: 'cluster', haybomb: 'haybomb' };
+  const kindFor: Partial<Record<WeaponId, ProjKind>> = {
+    bazooka: 'rocket', grenade: 'grenade', cluster: 'cluster', haybomb: 'haybomb', banana: 'banana',
+    doctor: 'syringe', rose: 'rose', surstromming: 'can', duck: 'duck',
+  };
 
   const kind = kindFor[weapon];
   if (kind) {
@@ -642,6 +805,28 @@ export function fire(sim: Sim, t: Terrain, w: Worm, weapon: WeaponId, angle: num
   if (weapon === 'shotgun') {
     sim.event({ type: 'fire', x: mx, y: my, kind: 'shotgun' });
     sim.shotgun(w, angle);
+    return true;
+  }
+  if (weapon === 'sheep') {
+    // Set down in front of the worm; it walks the way the aim points.
+    const dir: 1 | -1 = Math.cos(angle) >= 0 ? 1 : -1;
+    const p = sim.launch('sheep', w.x + dir * 10, w.y - 4, dir * 60, -160, w.id);
+    p.dir = dir;
+    sim.event({ type: 'fire', x: w.x + dir * 10, y: w.y - 4, kind: 'sheep' });
+    return true;
+  }
+  if (weapon === 'bat') {
+    sim.bat(w, angle);
+    return true;
+  }
+  if (weapon === 'everyone') {
+    sim.everyone(w.id);
+    return true;
+  }
+  if (weapon === 'folkhem' && tx !== undefined) {
+    const x = Math.max(20, Math.min(W - 20, tx));
+    sim.launch('house', x, -40, 0, 380, w.id);
+    sim.event({ type: 'fire', x, y: -40, kind: 'house' });
     return true;
   }
   if (weapon === 'airstrike' && tx !== undefined) {

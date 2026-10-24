@@ -5,7 +5,7 @@ import { CRATE_HEALTH, RETREAT_SECONDS, WEAPONS, WEAPON_BY_ID, type ArtEvent, ty
 import type { Player, RoomView } from '../../../shared/protocol.ts';
 import { audio, type Sound } from '../../audio.ts';
 import { esc, toast, type ViewFactory } from '../../ui.ts';
-import { buildBackdrop, buildTerrainCanvas, carveCanvas, drawBird, drawBubble, drawCloud, drawCrate, drawGrave, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles, weaponIcon } from './render.ts';
+import { buildBackdrop, buildTerrainCanvas, drawBackdrop, carveCanvas, drawBird, drawBubble, drawCloud, drawCrate, drawGrave, drawPlane, drawProjectile, drawSky, drawSun, drawWater, drawWorm, PALETTES, Particles, weaponIcon } from './render.ts';
 
 type Playback = {
   tl: Timeline;
@@ -23,7 +23,9 @@ type Playback = {
   shooter: number | null; // worm that fired this shot (null for jumps, floods…)
 };
 
-const PROJECTILES = new Set(['rocket', 'grenade', 'cluster', 'haybomb']);
+// Things the player aims and throws (for the last-shot trail).
+const PROJECTILES = new Set(['rocket', 'grenade', 'cluster', 'haybomb', 'banana', 'syringe', 'sheep', 'rose', 'can', 'duck']);
+const FUSED = new Set(['grenade', 'haybomb', 'banana']);
 
 // Little drawn icons for the end screen (emoji don't render everywhere).
 const SVG = {
@@ -56,7 +58,8 @@ const KEYS: [string[], string][] = [
   [['↑', '↓'], 'Aim (W/S)'],
   [['Q', 'E'], 'Power'],
   [['Space'], 'Fire'],
-  [['1', '–', '7'], 'Weapon'],
+  [['1', '–', '0'], 'Weapon'],
+  [['[', ']'], 'Next weapon'],
   [['Drag'], 'Aim by mouse'],
   [['H'], 'Hide this'],
 ];
@@ -199,6 +202,9 @@ export const createArtilleryView: ViewFactory = (root, send) => {
   const keys = new Set<string>();
 
   let view = { scale: 1, ox: 0, oy: 0, cw: 0, ch: 0, dpr: 1 };
+  // Visible world x range this frame (wide screens see past the map's edges).
+  let visX0 = 0;
+  let visX1 = W;
   let camX = W / 2;
   let camY = H / 2;
 
@@ -393,6 +399,9 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       case 'damage':
         p.hp.set(e.wormId!, Math.max(0, (p.hp.get(e.wormId!) ?? 0) - e.amount!));
         break;
+      case 'heal':
+        p.hp.set(e.wormId!, (p.hp.get(e.wormId!) ?? 0) + e.amount!);
+        break;
       case 'pickup':
         p.gone.add(e.crateId!);
         if (e.kind === 'health') p.hp.set(e.wormId!, (p.hp.get(e.wormId!) ?? 0) + (e.amount ?? 0));
@@ -462,7 +471,15 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       case 'fire': {
         const shooter = s?.turn ? wormPos(s.turn.wormId, nowF()) : [e.x, e.y];
         parts.muzzle(e.x, e.y, Math.atan2(e.y - shooter[1], e.x - shooter[0]));
-        if (e.kind === 'grenade' || e.kind === 'haybomb' || e.kind === 'cluster') sfx('throw', e.x);
+        if (e.kind === 'sheep') {
+          sfx('baa', e.x);
+          break;
+        }
+        if (e.kind === 'house') {
+          sfx('whistle', e.x);
+          break;
+        }
+        if (['grenade', 'haybomb', 'cluster', 'banana', 'duck', 'can', 'syringe', 'rose'].includes(e.kind!)) sfx('throw', e.x);
         else if (e.kind === 'shotgun') sfx('click', e.x);
         else {
           sfx('launch', e.x);
@@ -477,7 +494,23 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         if (r >= 60) flash = 0.7;
         if (e.kind === 'haybomb') {
           parts.holy(e.x, e.y);
-          comic(e.x, e.y - r * 0.6, 'HALLELUJAH!', 30, '#fff59a');
+          comic(e.x, e.y - r * 0.6, 'HAYALO!', 34, '#fff59a');
+          setTimeout(() => sfx('hayalo', e.x), 90);
+        } else if (e.kind === 'house') {
+          parts.confetti(e.x, e.y, ['#b5322b', '#ffffff', '#3d3540', '#9fd8ff'], 30);
+          comic(e.x, e.y - r * 0.6, 'FOLKHEMMET!', 26, '#ff8a80');
+          sfx('crash', e.x);
+        } else if (e.kind === 'rose' || e.kind === 'petal') {
+          parts.confetti(e.x, e.y, ['#e8213a', '#c4162a', '#ff5a6e', '#4fae3a'], e.kind === 'rose' ? 26 : 8);
+          if (e.kind === 'rose') comic(e.x, e.y - r * 0.6, 'FÖR SOLIDARITET!', 18, '#ff6b8b');
+        } else if (e.kind === 'duck') {
+          comic(e.x, e.y - r * 0.6, 'QUACK-BOOM!', 22);
+          sfx('quack', e.x);
+        } else if (e.kind === 'banana' || e.kind === 'minibanana') {
+          parts.confetti(e.x, e.y, ['#ffe14d', '#fff3a0', '#6b4a1c'], 10);
+          comic(e.x, e.y - r * 0.6, pick(['BANANAS!', 'SPLAT!', 'POTASSIUM!']), e.kind === 'banana' ? 22 : 15);
+        } else if (e.kind === 'zap') {
+          // The lightning already said it all.
         } else if (r >= 16) {
           comic(e.x, e.y - r * 0.5, pick(r >= 60 ? BOOM_WORDS.big : r >= 28 ? BOOM_WORDS.mid : BOOM_WORDS.small), r >= 28 ? 24 : 17);
         }
@@ -486,19 +519,56 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       }
       case 'bounce':
         if (e.wormId !== undefined) {
-          // Bonked a worm on the head.
-          parts.stars(e.x, e.y, 4);
-          comic(e.x, e.y - 10, 'BONK!', 14, '#ffffff');
+          // Bonked a worm on the head (or hit it for six).
+          const bat = e.kind === 'bat';
+          parts.stars(e.x, e.y, bat ? 9 : 4);
+          comic(e.x, e.y - 10, bat ? pick(['HOME RUN!', 'BONK!', 'OUT OF THE PARK!']) : 'BONK!', bat ? 22 : 14, bat ? '#ffe14d' : '#ffffff');
           sfx('bonk', e.x);
+          if (bat) shake = Math.min(22, shake + 8);
           hurtAt.set(e.wormId, performance.now() - 300);
         } else {
           parts.dust(e.x, e.y, 3, 0.6);
-          sfx(e.kind === 'haybomb' ? 'boing' : 'bounce', e.x, 0.8);
+          sfx(e.kind === 'duck' ? 'squeak' : e.kind === 'haybomb' || e.kind === 'banana' || e.kind === 'minibanana' ? 'boing' : 'bounce', e.x, 0.8);
         }
         break;
       case 'splash':
         parts.splash(e.x, e.y);
         sfx('splash', e.x);
+        if (e.kind === 'sheep') sfx('baa', e.x, 0.7);
+        break;
+      case 'heal': {
+        const [x, y] = wormPos(e.wormId!, nowF());
+        floaters.push({ x, y: y - 20, text: `+${e.amount}`, color: '#7cf29a', life: 0, size: 18, rot: 0 });
+        parts.sparkle(x, y);
+        renderTeams();
+        break;
+      }
+      case 'melee': {
+        parts.swish(e.x, e.y, Math.atan2(e.y2! - e.y, e.x2! - e.x));
+        sfx('bat', e.x);
+        break;
+      }
+      case 'cloud':
+        parts.cloud(e.x, e.y, e.r!, e.kind === 'medic' ? 'medic' : 'stink');
+        if (e.kind === 'medic') {
+          sfx('syringe', e.x);
+          setTimeout(() => sfx('heal', e.x), 150);
+          comic(e.x, e.y - 30, "DOCTOR'S ORDERS!", 18, '#ff8fb1');
+        } else {
+          sfx('stink', e.x);
+          comic(e.x, e.y - 30, pick(['PEW!', 'STINKY!', 'FY FAN!']), 22, '#b8e070');
+        }
+        break;
+      case 'zap':
+        parts.bolt(e.x, e.y);
+        flash = Math.max(flash, 0.3);
+        shake = Math.min(22, shake + 6);
+        sfx('zap', e.x);
+        break;
+      case 'ping':
+        comic(e.x, e.y - 34, '@everyone', 26, '#8c96ff');
+        sfx('ping', e.x);
+        if (e.wormId !== undefined) say(e.wormId, 'Hayalo, ping them all!');
         break;
       case 'damage': {
         const w = wormById(e.wormId!);
@@ -570,7 +640,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         break;
       case 'jump':
         parts.dust(e.x, e.y + WORM_R, 5, 0.8);
-        sfx('jump', e.x);
+        sfx(e.kind === 'sheep' ? 'baa' : 'jump', e.x, e.kind === 'sheep' ? 0.6 : 1);
         break;
       case 'land': {
         const v = e.amount ?? 0;
@@ -601,16 +671,35 @@ export const createArtilleryView: ViewFactory = (root, send) => {
         p.fx.add(tr.key);
         sfx('whistle', x, 0.7);
       }
-      if (tr.kind === 'grenade' || tr.kind === 'haybomb') {
+      if (FUSED.has(tr.kind)) {
         const sec = Math.floor((f - tr.start) / FPS);
         const k = `${tr.key}:${sec}`;
         if (!p.fx.has(k)) {
           p.fx.add(k);
           sfx('fuse', x);
         }
-        if (tr.kind === 'haybomb' && tr.end - f < 75 && !p.fx.has(tr.key + 'holy')) {
+        // The Holy Hay Bomb: a cheeky "truddelutt", then the choir swells into the blast.
+        if (tr.kind === 'haybomb' && tr.end - f < 160 && !p.fx.has(tr.key + 'toot')) {
+          p.fx.add(tr.key + 'toot');
+          sfx('truddelutt', x);
+        }
+        if (tr.kind === 'haybomb' && tr.end - f < 112 && !p.fx.has(tr.key + 'holy')) {
           p.fx.add(tr.key + 'holy');
           sfx('holy', x);
+        }
+      }
+      if (tr.kind === 'sheep') {
+        const k = `${tr.key}:baa${Math.floor((f - tr.start) / (FPS * 1.6))}`;
+        if (!p.fx.has(k)) {
+          p.fx.add(k);
+          if (f > tr.start + 20) sfx('baa', x, 0.45);
+        }
+      }
+      if (tr.kind === 'duck') {
+        const k = `${tr.key}:q${Math.floor((f - tr.start) / (FPS * 1.2))}`;
+        if (!p.fx.has(k)) {
+          p.fx.add(k);
+          sfx('quack', x, 0.5);
         }
       }
     }
@@ -644,10 +733,11 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     weaponsEl.innerHTML = WEAPONS.map((wp, i) => {
       const left = ammo ? ammo[wp.id] : wp.ammo;
       const out = left === 0;
-      return `<button class="wpn ${wp.id === weapon ? 'sel' : ''}" data-weapon="${wp.id}" ${out ? 'disabled' : ''} title="${esc(`${wp.name} (${i + 1}): ${wp.hint}`)}">
+      return `<button class="wpn ${wp.id === weapon ? 'sel' : ''}" data-weapon="${wp.id}" ${out ? 'disabled' : ''} title="${esc(`${wp.name}${i < 10 ? ` (${(i + 1) % 10})` : ''}: ${wp.hint}`)}">
         <img src="${weaponIcon(wp.id)}" alt="${esc(wp.name)}" draggable="false">${left >= 0 ? `<i>${left}</i>` : ''}</button>`;
     }).join('');
 
+    weaponsEl.querySelector('.sel')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     const inMatch = s.phase === 'aiming' || s.phase === 'resolving';
     const myTeam = mine >= 0 ? s.teams[mine] : null;
     const canSurrender = inMatch && !!myTeam && !myTeam.out && s.worms.some((w) => w.team === mine && w.alive);
@@ -663,7 +753,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     hintEl.textContent = running
       ? '🏃 Run for cover! Walk or jump before your shot lands.'
       : active
-        ? `${wp.name}: ${wp.hint}  ·  ${wp.aim === 'target' ? 'Tap the map to target' : 'Drag to aim (distance = power)'}`
+        ? `${wp.name}: ${wp.hint}  ·  ${wp.aim === 'target' ? 'Tap the map to target' : wp.aim === 'none' ? 'Just press FIRE' : 'Drag to aim (distance = power)'}`
         : s.phase === 'aiming' && team && !myTurn()
           ? `Watching ${team.name}…`
           : '';
@@ -748,8 +838,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       const w = worm(id);
       return w ? esc(s!.teams[w.team]?.name ?? '') : '';
     };
-    const aWeapon = (id?: WeaponId) =>
-      ({ bazooka: 'a bazooka', grenade: 'a grenade', shotgun: 'a shotgun', cluster: 'a cluster bomb', airstrike: 'an air strike', haybomb: 'the Holy Hay Bomb', teleport: 'a teleport' })[id ?? 'bazooka'];
+    const aWeapon = (id?: WeaponId) => esc(WEAPON_BY_ID[id ?? 'bazooka']?.phrase ?? 'a bazooka');
 
     // Scoreboard: winner first, then by damage dealt.
     const order = s!.teams.map((_, i) => i).sort((a, b) => (b === s!.winner ? 1 : 0) - (a === s!.winner ? 1 : 0) || (st.damage[b] ?? 0) - (st.damage[a] ?? 0));
@@ -868,6 +957,18 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     else if (canRetreat()) send({ a: 'jump', dir: lastDir });
   }
 
+  /** Step to the next (or previous) weapon that still has ammo. */
+  function cycleWeapon(step: 1 | -1) {
+    if (!s) return;
+    const mine = myTeamIdx();
+    const n = WEAPONS.length;
+    let i = WEAPONS.findIndex((w) => w.id === weapon);
+    for (let k = 0; k < n; k++) {
+      i = (i + step + n) % n;
+      if (mine < 0 || s.teams[mine].ammo[WEAPONS[i].id] !== 0) return selectWeapon(WEAPONS[i].id);
+    }
+  }
+
   function selectWeapon(id: WeaponId) {
     if (!s) return;
     const mine = myTeamIdx();
@@ -934,7 +1035,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (k === ' ' || k === 'Enter') fire();
     else if (k === 'j') jump();
     else if (k === 'h' || k === '?') setKeysOpen(!keysEl.classList.contains('open'));
-    else if (/^[1-7]$/.test(k)) selectWeapon(WEAPONS[Number(k) - 1].id);
+    else if (/^[0-9]$/.test(k)) selectWeapon(WEAPONS[(Number(k) + 9) % 10].id);
+    else if (k === '[' || k === ']') cycleWeapon(k === ']' ? 1 : -1);
   };
   const onKeyUp = (e: KeyboardEvent) => {
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -1050,6 +1152,8 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     ox = ww <= cw ? (cw - ww) / 2 : Math.min(0, Math.max(cw - ww, ox));
     oy = wh <= ch ? ch - wh : Math.min(0, Math.max(ch - wh, oy));
     view = { ...view, scale, ox, oy };
+    visX0 = -ox / scale;
+    visX1 = (cw - ox) / scale;
   }
   const ro = new ResizeObserver(resize);
   ro.observe(stage);
@@ -1081,7 +1185,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox + sx), dpr * (oy + sy));
     drawSun(ctx, time, pal);
     drawSkyLife(dt, now, time);
-    ctx.drawImage(backdrop, 0, 0);
+    drawBackdrop(ctx, backdrop, visX0 - 20, visX1 + 20);
     if (terrainCanvas) ctx.drawImage(terrainCanvas, 0, 0);
 
     const labels: { id: number; x: number; y: number; name: string; hp: number; color: string }[] = [];
@@ -1175,7 +1279,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     parts.draw(ctx);
     const level = waterAt(f);
     parts.water = level;
-    drawWater(ctx, time, (ch - oy) / scale + 10, pal, level);
+    drawWater(ctx, time, (ch - oy) / scale + 10, pal, level, visX0 - 20, visX1 + 20);
     if (pal.weather === 'snow') drawSnow(dt, time);
 
     // Screen-space text so it stays crisp at any zoom.
@@ -1414,8 +1518,10 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     const wind = s && (s.phase === 'aiming' || s.phase === 'resolving') ? s.wind : 0.1;
     for (const c of clouds) {
       c.x += (wind * 30 + 3) * c.s * dt;
-      if (c.x > W + 120) c.x = -120;
-      if (c.x < -120) c.x = W + 120;
+      const lo = Math.min(0, visX0) - 120;
+      const hi = Math.max(W, visX1) + 120;
+      if (c.x > hi) c.x = lo;
+      if (c.x < lo) c.x = hi;
       drawCloud(ctx, c.x, c.y, c.s);
     }
     if (pal.weather !== 'birds') return;
@@ -1446,8 +1552,10 @@ export const createArtilleryView: ViewFactory = (root, send) => {
       fl.y += (18 + fl.s * 12) * dt;
       fl.x += (wind * 70 + Math.sin(time + fl.p) * 10) * dt;
       if (fl.y > WATER_Y) fl.y = -5;
-      if (fl.x > W + 10) fl.x = -10;
-      if (fl.x < -10) fl.x = W + 10;
+      const lo = Math.min(0, visX0) - 10;
+      const hi = Math.max(W, visX1) + 10;
+      if (fl.x > hi) fl.x = lo;
+      if (fl.x < lo) fl.x = hi;
       ctx.moveTo(fl.x + fl.s, fl.y);
       ctx.arc(fl.x, fl.y, fl.s, 0, Math.PI * 2);
     }
@@ -1458,6 +1566,7 @@ export const createArtilleryView: ViewFactory = (root, send) => {
     if (!s?.turn) return;
     const mine = myTurn();
     const wp = WEAPON_BY_ID[mine ? weapon : s.turn.weapon];
+    if (wp.aim === 'none') return;
     if (wp.aim === 'target') {
       if (mine && target) {
         ctx.strokeStyle = color;

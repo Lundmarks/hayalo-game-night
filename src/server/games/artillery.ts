@@ -257,7 +257,9 @@ function runMoveSim(s: ArtState, ctx: GameContext, sim: Sim) {
   recordStats(s, tl, s.turn?.wormId ?? null);
   ctx.emit({ type: 'timeline', tl } satisfies ArtEvent);
   const ms = animMs(tl);
-  if (currentWorm(s)?.alive && s.turn) {
+  // Getting hurt (a bad fall, a crate going off) ends your turn.
+  const hurt = tl.events.some((e) => e.type === 'damage' && e.wormId === s.turn?.wormId);
+  if (currentWorm(s)?.alive && s.turn && !hurt) {
     // Don't let the animation eat into the turn time.
     P(s).busyUntil = Date.now() + ms;
     s.turn.endsAt += ms;
@@ -312,12 +314,17 @@ function retreatMove(s: ArtState, ctx: GameContext, pid: string, kind: SimInput[
 
 // ---- between turns: sudden death and crate drops ----
 
+/** Where to drop a crate: over land, and not on anyone's head (or another crate). */
 function crateSpot(s: ArtState) {
   const t = P(s).terrain!;
-  for (let i = 0; i < 40; i++) {
+  const CLEAR = 45;
+  for (let i = 0; i < 60; i++) {
     const x = Math.round(80 + Math.random() * (W - 160));
     const top = t.surfaceY(x);
-    if (top > 40 && top < s.water - 30) return x;
+    if (top <= 40 || top >= s.water - 30) continue;
+    if (s.worms.some((w) => w.alive && Math.abs(w.x - x) < CLEAR)) continue;
+    if (s.crates.some((c) => Math.abs(c.x - x) < CLEAR)) continue;
+    return x;
   }
   return null;
 }

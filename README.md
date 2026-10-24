@@ -4,7 +4,7 @@ A Discord Activity: a game launcher that runs inside Discord voice channels.
 
 Games:
 - **Hay-Tac-Toe**: two players, everyone else spectates.
-- **Hayalo Artillery**: Worms-style, 1–6 players, destructible terrain and seven weapons.
+- **Hayalo Artillery**: Worms-style, 1–6 players, destructible terrain and sixteen weapons.
 - **Hay, Where?**: everyone gets the same photo and drops a pin where they think it
   was taken. Closest wins, with a bonus for being quick.
 
@@ -96,8 +96,21 @@ the server checks them, updates the state and broadcasts it.
   `state.stats` which the server tallies after each timeline.
 - Weapon and award icons are drawn in code (no emoji), so they look the same
   everywhere.
+- Weapons: bazooka, grenade, shotgun, baseball bat, cluster bomb, banana bomb, air
+  strike, Holy Hay Bomb (a "truddelutt" toot, a choir, then a sung "Hayalo!"),
+  teleport, Dr. Carl Johan's syringe (heals your team, hurts the rest), Fälldin's
+  Sheep (walks and hops walls), Palme's Rose (six petal bombs), Per Albin's Folkhem
+  (a red cottage dropped from the sky), Surströmming (stink cloud, no crater),
+  Rubber Duck (very bouncy) and Hayalo @everyone (lightning on every enemy worm).
+  Stats are in `PROJ` in `sim.ts`, names and ammo in `WEAPONS` in `types.ts`, and
+  the drawings in `ART` and `weaponIcon()` in `render.ts`.
+- Getting hurt by your own move (a fall off a ledge) ends your turn. Crates never
+  drop within 45px of a worm.
+- On wide screens the hills and sea continue past the map's edges (mirrored copies
+  of the backdrop), so there's no hard edge.
 - Controls: drag on the map to aim (distance = power), Space/FIRE to shoot,
-  ←/→ or the buttons to walk, J to jump, W/S angle, Q/E power, 1–7 weapons.
+  ←/→ or the buttons to walk, J to jump, W/S angle, Q/E power, 1–0 for the first
+  ten weapons, [ and ] to step through all of them.
   The same list is on screen (H toggles it).
 
 ## Hay, Where?

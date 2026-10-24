@@ -12,6 +12,7 @@ export type Sound =
   | 'plane' | 'whistle' | 'teleport' | 'jump' | 'land' | 'hurt' | 'die' | 'holy' | 'fuse' | 'step'
   | 'boing' | 'bonk' | 'pop' | 'slide' | 'bubbles' | 'ricochet' | 'chirp' | 'whoosh' | 'hup' | 'sadTrombone'
   | 'pickup' | 'heal' | 'crateLand' | 'parachute' | 'flood' | 'alarm' | 'retreat' | 'slowmo'
+  | 'truddelutt' | 'hayalo' | 'bat' | 'baa' | 'quack' | 'squeak' | 'ping' | 'zap' | 'stink' | 'crash' | 'syringe'
   | 'click' | 'select' | 'yourTurn' | 'turn' | 'tick' | 'win' | 'lose' | 'place';
 
 type Opts = { pan?: number; gain?: number; pitch?: number };
@@ -330,25 +331,132 @@ const RECIPES: Record<Sound, Recipe> = {
     return 0.9;
   },
   holy: (a, out, t) => {
-    // A short "hallelujah" chord before the big bang.
-    const f = a.filter('lowpass', 2200);
+    // A choir "aaah" that swells and climbs a step before the big bang.
+    const dur = 1.9;
+    const f = a.filter('lowpass', 2400);
     const g = a.c.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.18, t + 0.25);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+    g.gain.exponentialRampToValueAtTime(0.16, t + 0.35);
+    g.gain.setValueAtTime(0.16, t + dur - 0.3);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     for (const hz of [440, 554.4, 659.3, 880]) {
-      for (const detune of [-8, 8]) {
+      for (const detune of [-9, 0, 9]) {
         const o = a.c.createOscillator();
         o.type = 'sawtooth';
-        o.frequency.value = hz;
+        o.frequency.setValueAtTime(hz, t);
+        o.frequency.setValueAtTime(hz * 1.1225, t + 1); // up a whole tone
         o.detune.value = detune;
         o.connect(f);
         o.start(t);
-        o.stop(t + 1.4);
+        o.stop(t + dur);
       }
     }
-    f.connect(g).connect(out);
-    return 1.4;
+    // Vowel filter so it sounds sung rather than played.
+    const vowel = a.filter('peaking', 900, 2);
+    vowel.gain.value = 9;
+    f.connect(vowel).connect(g).connect(out);
+    return dur;
+  },
+  truddelutt: (a, out, t) => {
+    // "Tru-ddel-UTT!": a cheeky little horn toot, short-short-long.
+    const f = a.filter('lowpass', 2600);
+    f.connect(out);
+    const parts: [number, number, number][] = [[523.3, 0, 0.1], [659.3, 0.12, 0.08], [587.3, 0.22, 0.08], [784, 0.34, 0.42]];
+    for (const [hz, at, len] of parts) {
+      const o = a.c.createOscillator();
+      o.type = 'square';
+      o.frequency.setValueAtTime(hz * 0.97, t + at);
+      o.frequency.exponentialRampToValueAtTime(hz, t + at + 0.03);
+      if (len > 0.3) {
+        const lfo = a.c.createOscillator();
+        lfo.frequency.value = 7;
+        const d = a.c.createGain();
+        d.gain.value = 9;
+        lfo.connect(d).connect(o.frequency);
+        lfo.start(t + at + 0.12);
+        lfo.stop(t + at + len + 0.05);
+      }
+      const g = a.env(t + at, 0.015, 0.12, len);
+      o.connect(g).connect(f);
+      o.start(t + at);
+      o.stop(t + at + len + 0.05);
+    }
+    return 0.85;
+  },
+  hayalo: (a, out, t) => {
+    // A little choir singing "HAY-a-LOOO!" over the blast: three syllables, three voices.
+    // Formants: "ay" glides from e to i, "a" is open, "lo" goes l -> o.
+    const syl: { at: number; dur: number; from: [number, number]; to: [number, number]; note: number }[] = [
+      { at: 0, dur: 0.24, from: [560, 1850], to: [330, 2250], note: 1 },
+      { at: 0.26, dur: 0.16, from: [780, 1250], to: [740, 1200], note: 1.125 },
+      { at: 0.44, dur: 0.75, from: [380, 1000], to: [460, 760], note: 1.335 },
+    ];
+    // An "h" breath before the first syllable.
+    a.burst(out, t - 0.02, { type: 'bandpass', from: 1800, q: 1, peak: 0.12, decay: 0.07 });
+    for (const base of [330, 415.3, 494]) {
+      for (const sy of syl) {
+        const hz = base * sy.note;
+        const end = sy === syl[2] ? [hz, hz * 1.01, hz * 0.99, hz] : [hz, hz];
+        a.voice(out, t + sy.at, { pitch: end, from: sy.from, to: sy.to, dur: sy.dur, peak: 0.22 });
+      }
+    }
+    return 1.3;
+  },
+  bat: (a, out, t, p) => {
+    // Swish, then a wooden CRACK.
+    a.burst(out, t, { type: 'bandpass', from: 600 * p, to: 2400, q: 2, attack: 0.06, peak: 0.25, decay: 0.12 });
+    a.tone(out, t + 0.13, { type: 'triangle', from: 900 * p, to: 300, peak: 0.5, decay: 0.08 });
+    a.burst(out, t + 0.13, { type: 'highpass', from: 1500, attack: 0.001, peak: 0.7, decay: 0.08 });
+    return 0.3;
+  },
+  baa: (a, out, t, p) => {
+    // "Baa-a-a": a wobbly bleat.
+    const hz = 380 * p;
+    const pitch = [hz, hz * 1.06, hz * 0.96, hz * 1.06, hz * 0.96, hz * 1.04, hz * 0.9];
+    a.voice(out, t, { pitch, from: [650, 1500], to: [780, 1250], dur: 0.55, peak: 0.35 });
+    return 0.65;
+  },
+  quack: (a, out, t, p) => {
+    a.voice(out, t, { pitch: [520 * p, 420 * p], from: [700, 1900], to: [500, 1300], dur: 0.14, peak: 0.4 });
+    return 0.2;
+  },
+  squeak: (a, out, t, p) => {
+    // Rubber toy squeeze.
+    a.tone(out, t, { type: 'triangle', from: 1500 * p, to: 2300 * p, peak: 0.18, decay: 0.12, sweep: 0.08 });
+    a.tone(out, t, { type: 'sine', from: 3000 * p, to: 4200 * p, peak: 0.05, decay: 0.1 });
+    return 0.15;
+  },
+  ping: (a, out, t) => {
+    // A chat notification "bloop-bloop".
+    a.tone(out, t, { type: 'sine', from: 880, to: 1320, peak: 0.25, decay: 0.12, sweep: 0.05 });
+    a.tone(out, t + 0.13, { type: 'sine', from: 1175, to: 1760, peak: 0.25, decay: 0.2, sweep: 0.05 });
+    return 0.4;
+  },
+  zap: (a, out, t, p) => {
+    // Electric crackle and a thunder thump.
+    for (let i = 0; i < 6; i++) a.burst(out, t + i * 0.025, { type: 'highpass', from: 2500 + Math.random() * 3000, attack: 0.001, peak: 0.35, decay: 0.03 });
+    a.tone(out, t, { type: 'sawtooth', from: 1800 * p, to: 120, peak: 0.15, decay: 0.2 });
+    a.burst(out, t + 0.05, { type: 'lowpass', from: 300, peak: 0.6, decay: 0.5 });
+    return 0.6;
+  },
+  stink: (a, out, t, p) => {
+    // The can pops, gas hisses out, someone goes "eww".
+    a.tone(out, t, { from: 400 * p, to: 1200, peak: 0.25, decay: 0.05 });
+    a.burst(out, t + 0.03, { type: 'highpass', from: 3500, attack: 0.05, peak: 0.18, decay: 0.8 });
+    a.voice(out, t + 0.35, { pitch: [380 * p, 300 * p], from: [450, 2000], to: [300, 2300], dur: 0.45, peak: 0.3 });
+    return 1;
+  },
+  crash: (a, out, t) => {
+    // Wood splintering and roof tiles.
+    for (let i = 0; i < 8; i++) a.burst(out, t + Math.random() * 0.35, { type: 'bandpass', from: 500 + Math.random() * 1500, q: 3, peak: 0.25, decay: 0.08 });
+    a.tone(out, t, { type: 'sawtooth', from: 160, to: 70, peak: 0.2, decay: 0.4 });
+    return 0.6;
+  },
+  syringe: (a, out, t, p) => {
+    // A quick "shk" and a doctor-ish "boop".
+    a.burst(out, t, { type: 'highpass', from: 4000, peak: 0.2, decay: 0.05 });
+    a.tone(out, t + 0.06, { type: 'sine', from: 1046 * p, peak: 0.15, decay: 0.12 });
+    return 0.2;
   },
   fuse: (a, out, t) => {
     a.tone(out, t, { type: 'square', from: 2200, peak: 0.05, decay: 0.03 });

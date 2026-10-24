@@ -189,7 +189,11 @@ body.offline::after {
   padding: 8px 12px; background: rgba(0, 0, 0, 0.3); transition: opacity 0.2s;
 }
 .art-bar.inactive { opacity: 0.45; pointer-events: none; }
-.weapons { display: flex; gap: 6px; flex-wrap: wrap; }
+.weapons {
+  display: flex; gap: 6px; flex: 1 1 0; min-width: 0; overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.25) transparent;
+}
+.wpn { flex: none; }
 .wpn {
   position: relative; width: 40px; height: 40px; border-radius: 10px; border: 2px solid transparent;
   background: var(--card); cursor: pointer; font-size: 20px; display: grid; place-items: center;
@@ -283,6 +287,9 @@ kbd {
   .art-teams { width: 150px; font-size: 10px; top: 6px; left: 6px; }
   .tname { flex-basis: 56px; }
   .wpn { width: 36px; height: 36px; font-size: 18px; }
+  /* 16 weapons: give them their own scrollable row above the controls. */
+  .weapons { flex-basis: 100%; }
+  .art-bar .controls { margin-left: auto; }
   .wind-bar { width: 60px; }
 }
 

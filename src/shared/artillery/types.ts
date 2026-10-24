@@ -1,22 +1,35 @@
-export type WeaponId = 'bazooka' | 'grenade' | 'cluster' | 'shotgun' | 'airstrike' | 'haybomb' | 'teleport';
+export type WeaponId =
+  | 'bazooka' | 'grenade' | 'shotgun' | 'bat' | 'cluster' | 'banana' | 'airstrike' | 'haybomb' | 'teleport'
+  | 'doctor' | 'sheep' | 'rose' | 'folkhem' | 'surstromming' | 'duck' | 'everyone';
 
 export type WeaponDef = {
   id: WeaponId;
   name: string;
-  icon: string;
+  /** How the end screen says it: "scored an own goal with a grenade". */
+  phrase: string;
   ammo: number; // -1 = unlimited
-  aim: 'angle' | 'target';
+  /** angle: aim with angle + power. target: tap the map. none: just fire. */
+  aim: 'angle' | 'target' | 'none';
   hint: string;
 };
 
 export const WEAPONS: WeaponDef[] = [
-  { id: 'bazooka', name: 'Bazooka', icon: '🚀', ammo: -1, aim: 'angle', hint: 'Explodes on impact. Pushed by wind.' },
-  { id: 'grenade', name: 'Grenade', icon: '💣', ammo: -1, aim: 'angle', hint: 'Bounces, explodes after 3 seconds. Ignores wind.' },
-  { id: 'shotgun', name: 'Shotgun', icon: '🔫', ammo: -1, aim: 'angle', hint: 'Instant straight shot. Small but precise.' },
-  { id: 'cluster', name: 'Cluster Bomb', icon: '🎆', ammo: 2, aim: 'angle', hint: 'Bursts into five bomblets on impact.' },
-  { id: 'airstrike', name: 'Air Strike', icon: '✈️', ammo: 1, aim: 'target', hint: 'Tap the map. Five missiles rain down there.' },
-  { id: 'haybomb', name: 'Holy Hay Bomb', icon: '🌾', ammo: 1, aim: 'angle', hint: 'Huge blast after 4 seconds. Bounces.' },
-  { id: 'teleport', name: 'Teleport', icon: '✨', ammo: 2, aim: 'target', hint: 'Tap an open spot to move there. Uses your turn.' },
+  { id: 'bazooka', name: 'Bazooka', phrase: 'a bazooka', ammo: -1, aim: 'angle', hint: 'Explodes on impact. Pushed by wind.' },
+  { id: 'grenade', name: 'Grenade', phrase: 'a grenade', ammo: -1, aim: 'angle', hint: 'Bounces, explodes after 3 seconds. Ignores wind.' },
+  { id: 'shotgun', name: 'Shotgun', phrase: 'a shotgun', ammo: -1, aim: 'angle', hint: 'Instant straight shot. Small but precise.' },
+  { id: 'bat', name: 'Baseball Bat', phrase: 'a baseball bat', ammo: 2, aim: 'angle', hint: 'Whack a worm next to you clean across the map. Aim sets the direction.' },
+  { id: 'cluster', name: 'Cluster Bomb', phrase: 'a cluster bomb', ammo: 2, aim: 'angle', hint: 'Bursts into five bomblets on impact.' },
+  { id: 'banana', name: 'Banana Bomb', phrase: 'a banana bomb', ammo: 1, aim: 'angle', hint: 'Bounces, then splits into five bouncing mini bananas.' },
+  { id: 'airstrike', name: 'Air Strike', phrase: 'an air strike', ammo: 1, aim: 'target', hint: 'Tap the map. Five missiles rain down there.' },
+  { id: 'haybomb', name: 'Holy Hay Bomb', phrase: 'the Holy Hay Bomb', ammo: 1, aim: 'angle', hint: 'Huge blast after 4 seconds. Bounces. Hayalo!' },
+  { id: 'teleport', name: 'Teleport', phrase: 'a teleport', ammo: 2, aim: 'target', hint: 'Tap an open spot to move there. Uses your turn.' },
+  { id: 'doctor', name: 'Dr. Carl Johan', phrase: "Dr. Carl Johan's syringe", ammo: 2, aim: 'angle', hint: "The doctor's syringe: heals your worms where it lands, side effects for everyone else." },
+  { id: 'sheep', name: "Fälldin's Sheep", phrase: "Fälldin's sheep", ammo: 1, aim: 'angle', hint: 'A sheep from the Fälldin farm walks the way you face, hops over walls and explodes.' },
+  { id: 'rose', name: "Palme's Rose", phrase: "Palme's rose", ammo: 1, aim: 'angle', hint: 'A red rose that bursts into six petal bombs. Petals drift with the wind.' },
+  { id: 'folkhem', name: "Per Albin's Folkhem", phrase: 'a falling folkhem', ammo: 1, aim: 'target', hint: 'Tap the map. A little red house drops from the sky there.' },
+  { id: 'surstromming', name: 'Surströmming', phrase: 'a can of surströmming', ammo: 2, aim: 'angle', hint: 'Opens on impact. The stink hurts every worm nearby, no crater.' },
+  { id: 'duck', name: 'Rubber Duck', phrase: 'a rubber duck', ammo: 2, aim: 'angle', hint: 'Super bouncy. Squeaks for 5 seconds, then explodes.' },
+  { id: 'everyone', name: 'Hayalo @everyone', phrase: "Hayalo's @everyone ping", ammo: 1, aim: 'none', hint: 'The Hayalo bot pings @everyone: lightning hits every enemy worm.' },
 ];
 
 export const WEAPON_BY_ID = Object.fromEntries(WEAPONS.map((w) => [w.id, w])) as Record<WeaponId, WeaponDef>;
@@ -43,7 +56,9 @@ export type Crate = {
 };
 
 /** Weapons a weapon crate can hold (the limited ones). */
-export const CRATE_WEAPONS: WeaponId[] = ['cluster', 'cluster', 'airstrike', 'haybomb', 'teleport'];
+export const CRATE_WEAPONS: WeaponId[] = [
+  'cluster', 'cluster', 'airstrike', 'haybomb', 'teleport', 'bat', 'banana', 'doctor', 'sheep', 'rose', 'folkhem', 'surstromming', 'duck', 'everyone',
+];
 export const CRATE_HEALTH = 25;
 export const MAX_HP = 150;
 /** Seconds you can keep moving after firing. */
@@ -110,7 +125,9 @@ export type ArtState = {
   stats: MatchStats;
 };
 
-export type ProjKind = 'rocket' | 'grenade' | 'cluster' | 'bomblet' | 'missile' | 'haybomb';
+export type ProjKind =
+  | 'rocket' | 'grenade' | 'cluster' | 'bomblet' | 'missile' | 'haybomb'
+  | 'banana' | 'minibanana' | 'syringe' | 'sheep' | 'rose' | 'petal' | 'house' | 'can' | 'duck';
 
 export type Track = {
   key: string;
@@ -129,7 +146,12 @@ export type SimEvent = {
     | 'fire' | 'explode' | 'bounce' | 'splash' | 'damage' | 'die' | 'shot' | 'airstrike' | 'teleport' | 'land' | 'jump'
     | 'flood' // water rises from `amount` to `y`
     | 'crate' // kind: 'drop' | 'land' | 'destroy' | 'sink'
-    | 'pickup'; // wormId picked up crateId (kind: 'health' | weapon id)
+    | 'pickup' // wormId picked up crateId (kind: 'health' | weapon id)
+    | 'heal' // wormId got `amount` HP back
+    | 'melee' // a bat swing from x,y towards x2,y2
+    | 'cloud' // kind 'stink' | 'medic', radius r
+    | 'zap' // lightning strikes x,y
+    | 'ping'; // the @everyone ping goes out
   x: number;
   y: number;
   x2?: number;
